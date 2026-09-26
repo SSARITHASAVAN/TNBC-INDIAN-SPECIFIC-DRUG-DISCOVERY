@@ -1,7 +1,0 @@
-﻿{
-  "@context": "https://schema.org/",
-  "@type": "Dataset",
-  "name": "TNBC Pilot Dataset - Institution - v1.0",
-  "description": "Pilot dataset: RNA-seq and drug response for TNBC samples. Controlled access.",
-  "contactPoint": {"@type":"ContactPoint","email":"ssarithasavan@gmail.com","contactType":"Data access requests"}
-}
