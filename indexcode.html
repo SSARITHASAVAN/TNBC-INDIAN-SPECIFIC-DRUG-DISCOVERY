@@ -1,0 +1,726 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>TNBC-India Atlas — Single-file Live Pipeline</title>
+
+  <!-- Fonts + SmilesDrawer (2D viewer) -->
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/smiles-drawer@2.1.0/dist/smiles-drawer.min.js"></script>
+
+  <style>
+    :root{--bg:#F9FAFB;--s1:#F3F4F6;--b1:#CBD5E1;--t1:#111827;--t2:#374151;--t3:#6B7280;--mono:'IBM Plex Mono',monospace;--sans:'Inter',system-ui,sans-serif;--accent:#3B82F6}
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;background:var(--bg);font-family:var(--sans);color:var(--t1)}
+    nav{background:#0b1220;color:#fff;padding:.6rem 1rem;display:flex;gap:.6rem;align-items:center}
+    .brand{font-family:var(--mono);font-weight:700}
+    .wrap{max-width:1200px;margin:1rem auto;padding:1rem}
+    .card{background:var(--s1);border:1px solid var(--b1);padding:1rem;border-radius:8px;margin-bottom:1rem}
+    .row{display:flex;gap:.6rem;flex-wrap:wrap}
+    .col{flex:1;min-width:220px}
+    .btn{background:var(--accent);color:#fff;border:none;padding:.5rem .75rem;border-radius:6px;cursor:pointer}
+    .btn-ghost{background:transparent;border:1px solid var(--b1);padding:.45rem .7rem;border-radius:6px;cursor:pointer}
+    input[type=file]{display:inline-block}
+    textarea{width:100%;min-height:120px;font-family:var(--mono);padding:.5rem}
+    table{width:100%;border-collapse:collapse;font-size:.85rem}
+    th,td{padding:.4rem .5rem;border-bottom:1px solid var(--b1);text-align:left}
+    th{background:#fff;font-family:var(--mono);font-size:.72rem;color:var(--t3)}
+    .small{font-size:.85rem;color:var(--t3)}
+    .mono{font-family:var(--mono)}
+    .pill{display:inline-block;padding:3px 8px;border-radius:999px;background:#fff;border:1px solid var(--b1);font-size:.78rem}
+    .viewer{width:220px;height:160px;border:1px solid var(--b1);background:#fff;border-radius:6px}
+    .progress{height:8px;background:#e6eefc;border-radius:6px;overflow:hidden}
+    .progress > i{display:block;height:100%;width:0;background:var(--accent)}
+    .notice{background:#fff8e6;border:1px solid #f0d9b0;padding:.6rem;border-radius:6px}
+    .muted{color:var(--t3)}
+    .flex{display:flex;gap:.5rem;align-items:center}
+    .small-btn{padding:.25rem .45rem;border-radius:5px;border:1px solid var(--b1);background:transparent;cursor:pointer}
+    .hidden{display:none}
+    .table-scroll{max-height:420px;overflow:auto}
+    .tag{display:inline-block;padding:2px 6px;border-radius:6px;background:#eef2ff;color:var(--accent);font-family:var(--mono);font-size:.72rem}
+    footer{font-size:.82rem;color:var(--t3);text-align:center;padding:1rem}
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="brand">TNBC-India Atlas — Live Pipeline (single file)</div>
+  </nav>
+
+  <div class="wrap">
+    <!-- Upload / Parse -->
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <div style="font-weight:700">Upload gene list</div>
+          <div class="small muted">Plain text, CSV, TSV — one gene symbol per line or mixed lines. Large lists supported.</div>
+        </div>
+        <div class="flex">
+          <input id="geneFile" type="file" accept=".txt,.csv,.tsv" />
+          <button class="btn" onclick="loadGenesFromFile()">Upload & Parse</button>
+        </div>
+      </div>
+
+      <div style="margin-top:.8rem" class="row">
+        <div class="col">
+          <div style="font-weight:600;margin-bottom:.4rem">Parsed tokens (preview)</div>
+          <textarea id="genePreview" readonly placeholder="Parsed gene tokens will appear here"></textarea>
+        </div>
+
+        <div style="min-width:320px" class="col">
+          <div style="display:flex;gap:.5rem;align-items:center;margin-bottom:.5rem">
+            <button class="btn-ghost" onclick="showLoadedGenes()">Show Loaded</button>
+            <button class="btn-ghost" onclick="showUnmatchedGenes()">Show Unmatched</button>
+            <button class="btn-ghost" onclick="consoleLogState()">Console Log</button>
+          </div>
+
+          <div style="margin-top:.6rem">
+            <div style="font-weight:600">Normalization & fetch</div>
+            <div class="small muted">Normalize symbols (MyGene.info), resolve ChEMBL targets, fetch activities and SMILES, extract MW/IC50.</div>
+            <div style="margin-top:.5rem" class="flex">
+              <button class="btn" onclick="normalizeThenFetch()">Normalize & Fetch (ChEMBL)</button>
+              <button class="small-btn" onclick="clearAll()">Clear</button>
+            </div>
+            <div style="margin-top:.6rem" id="progressLbl" class="small muted">Idle.</div>
+            <div style="margin-top:.5rem" class="progress"><i id="progressBar"></i></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Compounds table + viewer + exports -->
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.6rem">
+        <div style="font-weight:700">Compounds (fetched)</div>
+        <div class="flex">
+          <input id="cs" placeholder="Search ID/Name/Target" style="padding:.4rem .6rem;border:1px solid var(--b1);border-radius:6px" oninput="filterC()" />
+          <select id="ct" style="padding:.4rem;border:1px solid var(--b1);border-radius:6px" onchange="filterC()">
+            <option value="">All Targets</option>
+          </select>
+          <button class="small-btn" onclick="exportCsv()">CSV</button>
+          <button class="small-btn" onclick="exportJson()">JSON</button>
+          <button class="small-btn" onclick="exportSmiles()">SMILES</button>
+        </div>
+      </div>
+
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th><th>Name</th><th>Target</th><th>IC50 (nM)</th><th>MW</th><th>SMILES</th><th>Structure</th><th>Source</th>
+            </tr>
+          </thead>
+          <tbody id="cTbody"></tbody>
+        </table>
+      </div>
+
+      <div style="margin-top:.6rem" class="small muted">
+        <span id="ccount-lbl">0 compounds</span>
+      </div>
+    </div>
+
+    <!-- Pathway enrichment -->
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <div style="font-weight:700">Pathway enrichment (KEGG via Entrez mapping)</div>
+          <div class="small muted">Uses MyGene to map symbols → Entrez IDs, then KEGG REST to find pathways. Exportable report.</div>
+        </div>
+        <div class="flex">
+          <button class="btn" onclick="runPathwayEnrichment()">Run Enrichment</button>
+          <button class="small-btn" onclick="exportPathways()">Export</button>
+        </div>
+      </div>
+
+      <div style="margin-top:.6rem" id="pathwayResults"></div>
+    </div>
+
+    <!-- Retrosynthesis UI -->
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <div style="font-weight:700">Retrosynthesis (server proxy recommended)</div>
+          <div class="small muted">Enter SMILES and call your retrosynthesis server (POST /api/retrosynth). If you don't have a server, the UI will show a placeholder and instructions.</div>
+        </div>
+        <div class="flex">
+          <input id="retroSmiles" placeholder="SMILES (e.g. CC(=O)Oc1ccccc1C(=O)O)" style="padding:.4rem;border:1px solid var(--b1);border-radius:6px" />
+          <button class="btn" onclick="callRetrosynthesis()">Run</button>
+        </div>
+      </div>
+
+      <div style="margin-top:.6rem" id="retroResult" class="small muted">No retrosynthesis run yet.</div>
+    </div>
+
+    <!-- Short instructions / server proxy snippet -->
+    <div class="card">
+      <div style="font-weight:700;margin-bottom:.4rem">Server proxy (recommended for production & API keys)</div>
+      <div class="small muted">Below is a minimal Node/Express proxy you can run (save as <code>proxy.js</code>) to forward requests and keep API keys secret. Start with <code>node proxy.js</code>. This is optional — the UI works client-side for public endpoints (ChEMBL, MyGene, KEGG) but some APIs require CORS or keys.</div>
+      <pre style="background:#fff;padding:.6rem;border-radius:6px;border:1px solid var(--b1);overflow:auto;font-family:var(--mono);font-size:.82rem">
+// Minimal proxy (Node/Express) - save as proxy.js
+// npm i express node-fetch cors
+const express = require('express');
+const fetch = require('node-fetch');
+const cors = require('cors');
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// Example: forward retrosynthesis request to your retrosynthesis provider
+app.post('/api/retrosynth', async (req, res) =&gt; {
+  const { smiles } = req.body;
+  // Replace with your provider endpoint and API key
+  // const providerUrl = 'https://your-retro-api.example/route';
+  // const r = await fetch(providerUrl, { method:'POST', headers:{ 'Authorization':'Bearer YOUR_KEY','Content-Type':'application/json' }, body: JSON.stringify({smiles}) });
+  // const data = await r.json();
+  // res.json(data);
+
+  // Placeholder response for demo:
+  res.json({ ok:true, note:'Replace proxy body with your provider call', smiles });
+});
+
+app.listen(3000, ()=>console.log('Proxy listening on http://localhost:3000'));
+      </pre>
+    </div>
+
+    <footer>Run this single HTML file locally (double-click) or host on GitHub Pages. If APIs return CORS errors, run the proxy above and update the UI endpoint for retrosynthesis or other protected APIs.</footer>
+  </div>
+
+  <script>
+  /* ===========================
+     CONFIG & STATE
+     =========================== */
+  const CFG = {
+    chembl_base: 'https://www.ebi.ac.uk/chembl/api/data',
+    mygene_query: 'https://mygene.info/v3/query',
+    batchSize: 20,
+    activitiesPerTarget: 300,
+    retryDelay: 1200,
+    maxRetries: 2,
+    smilesViewerSize: { width: 220, height: 160 }
+  };
+
+  let rawGeneTokens = [];
+  let geneList = [];
+  let normalizedGenes = [];
+  let unmatchedGenes = new Set();
+  let compounds = []; // array of rows {ID,Name,Target,IC50,MW,SMILES,Source}
+  let isRunning = false;
+
+  /* ===========================
+     UTIL
+     =========================== */
+  function delay(ms){ return new Promise(r=>setTimeout(r,ms)); }
+  function el(id){ return document.getElementById(id); }
+  function setProgress(p, txt){
+    el('progressBar').style.width = Math.max(0,Math.min(100,p)) + '%';
+    el('progressLbl').textContent = txt || '';
+  }
+  function downloadText(text, filename, mime='text/plain'){
+    const blob = new Blob([text], {type:mime});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href=url; a.download=filename; document.body.appendChild(a); a.click();
+    setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); },500);
+  }
+
+  /* ===========================
+     FILE PARSING
+     =========================== */
+  function loadGenesFromFile(){
+    const f = el('geneFile').files[0];
+    if(!f){ alert('Choose a gene file (.txt, .csv, .tsv)'); return; }
+    const reader = new FileReader();
+    reader.onload = e => {
+      const text = e.target.result;
+      // split lines, robust token extraction
+      const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+      const tokens = [];
+      for(const line of lines){
+        const parts = line.split(/[\t,;|]/).map(p=>p.trim()).filter(Boolean);
+        for(const p of parts){
+          // remove common annotations and non-alphanum
+          const cleaned = p.replace(/[:(){}
+
+\[\]
+
+]/g,' ').replace(/[^A-Za-z0-9_\- ]/g,' ').trim();
+          const candidates = cleaned.split(/\s+/).filter(Boolean);
+          for(const c of candidates){
+            if(/[A-Za-z]/.test(c) && c.length>=2 && c.length<=12){
+              tokens.push(c.toUpperCase());
+            }
+          }
+        }
+      }
+      rawGeneTokens = Array.from(new Set(tokens));
+      geneList = rawGeneTokens.slice();
+      el('genePreview').value = geneList.slice(0,5000).join('\n');
+      populateTargetSelect(geneList);
+      el('ccount-lbl').textContent = `${geneList.length} gene tokens parsed`;
+      alert('Parsed ' + geneList.length + ' candidate gene tokens. Click Normalize & Fetch to continue.');
+    };
+    reader.readAsText(f);
+  }
+
+  /* ===========================
+     NORMALIZATION (MyGene.info)
+     =========================== */
+  async function normalizeGenes(tokens){
+    const normalized = [];
+    const mapTokenToCanonical = {};
+    const batchSize = 200;
+    for(let i=0;i<tokens.length;i+=batchSize){
+      const batch = tokens.slice(i,i+batchSize);
+      // build query: symbol: OR alias:
+      const q = batch.map(t => `symbol:${t} OR alias:${t} OR name:${t}`).join(' OR ');
+      const params = new URLSearchParams();
+      params.set('q', q);
+      params.set('fields', 'symbol,name,entrezgene,ensembl');
+      params.set('size', batch.length * 2);
+      const url = `${CFG.mygene_query}?${params.toString()}`;
+      try{
+        const resp = await fetch(url);
+        if(!resp.ok) throw new Error('MyGene error ' + resp.status);
+        const data = await resp.json();
+        const hits = data.hits || [];
+        const hitByQuery = {};
+        for(const h of hits){
+          const sym = (h.symbol || '').toUpperCase();
+          if(sym) hitByQuery[sym] = h;
+          if(h.alias && Array.isArray(h.alias)){
+            for(const a of h.alias) hitByQuery[String(a).toUpperCase()] = h;
+          }
+        }
+        for(const t of batch){
+          const h = hitByQuery[t] || hitByQuery[t.replace(/-/g,'')] || null;
+          if(h && h.symbol) mapTokenToCanonical[t] = h.symbol.toUpperCase();
+          else mapTokenToCanonical[t] = null;
+        }
+      } catch(e){
+        console.warn('MyGene batch failed', e);
+        for(const t of batch) mapTokenToCanonical[t] = null;
+      }
+      await delay(200);
+    }
+    for(const t of tokens){
+      const canon = mapTokenToCanonical[t];
+      if(canon) normalized.push(canon);
+      else normalized.push(t);
+    }
+    const uniq = Array.from(new Set(normalized));
+    normalizedGenes = uniq;
+    return uniq;
+  }
+
+  /* ===========================
+     MAIN: normalizeThenFetch
+     =========================== */
+  async function normalizeThenFetch(){
+    if(isRunning) return;
+    if(!geneList.length){ alert('No genes parsed. Upload file first.'); return; }
+    isRunning = true;
+    setProgress(5, 'Normalizing gene symbols (MyGene.info)...');
+    try{
+      const norm = await normalizeGenes(geneList);
+      el('genePreview').value = norm.slice(0,2000).join('\n');
+      el('ccount-lbl').textContent = `${norm.length} normalized genes`;
+      populateTargetSelect(norm);
+      unmatchedGenes = new Set();
+      compounds = [];
+      renderCompounds([]);
+      await startFetchForGenes(norm);
+    } catch(e){
+      console.error('Normalization failed', e);
+      alert('Normalization failed. See console for details.');
+    } finally {
+      isRunning = false;
+      setProgress(0, 'Idle.');
+    }
+  }
+
+  /* ===========================
+     ChEMBL pipeline (fetch targets & activities + SMILES)
+     =========================== */
+  async function startFetchForGenes(genes){
+    if(!genes || !genes.length) { alert('No genes to fetch'); return; }
+    setProgress(2, 'Resolving targets and fetching compounds...');
+    compounds = [];
+    let processed = 0;
+    for(let i=0;i<genes.length;i+=CFG.batchSize){
+      const batch = genes.slice(i,i+CFG.batchSize);
+      setProgress(Math.round((i/genes.length)*30)+2, `Resolving targets for genes ${i+1}-${i+batch.length} of ${genes.length}...`);
+      const targetsMap = await fetchTargetsForGenes(batch);
+      for(const g of batch){
+        const tlist = targetsMap[g] || [];
+        if(!tlist.length){ unmatchedGenes.add(g); processed++; continue; }
+        for(const t of tlist){
+          setProgress(Math.round((processed/genes.length)*60)+30, `Fetching activities for ${t.target_chembl_id} (${g})...`);
+          try{
+            const acts = await fetchActivitiesForTarget(t.target_chembl_id, CFG.activitiesPerTarget);
+            // For each activity, fetch molecule details to get SMILES (molecule endpoint)
+            for(const a of acts){
+              const molId = a.molecule_chembl_id || a.molecule_chembl_id;
+              if(!molId) continue;
+              // attempt to get SMILES from activity if present, else fetch molecule endpoint
+              let smiles = '';
+              if(a.molecule_structures && a.molecule_structures.smiles) smiles = a.molecule_structures.smiles;
+              else {
+                try{
+                  const m = await fetchWithRetries(`${CFG.chembl_base}/molecule/${encodeURIComponent(molId)}.json`);
+                  if(m && m.molecule_structures && m.molecule_structures.smiles) smiles = m.molecule_structures.smiles;
+                } catch(e){
+                  // ignore
+                }
+              }
+              const row = {
+                ID: molId || '',
+                Name: a.molecule_pref_name || a.pref_name || '',
+                Target: g,
+                'IC50 (nM)': extractIc50(a),
+                MW: a.molecule_properties ? a.molecule_properties.full_molweight : '',
+                SMILES: smiles || '',
+                Source: 'ChEMBL'
+              };
+              compounds.push(row);
+            }
+            compounds = dedupeCompounds(compounds);
+            renderCompounds(compounds);
+          } catch(e){
+            console.warn('Activities fetch failed for', t.target_chembl_id, e);
+          }
+          await delay(120);
+        }
+        processed++;
+      }
+      await delay(300);
+    }
+    setProgress(100, `Done. ${compounds.length} unique compounds collected.`);
+  }
+
+  async function fetchTargetsForGenes(genes){
+    const out = {};
+    const concurrency = 6;
+    let idx = 0;
+    async function worker(){
+      while(idx < genes.length){
+        const g = genes[idx++];
+        try{
+          const url = `${CFG.chembl_base}/target/search.json?target_synonym=${encodeURIComponent(g)}&limit=50`;
+          const res = await fetchWithRetries(url);
+          if(res && res.targets && res.targets.length){
+            out[g] = res.targets.map(t=>({ target_chembl_id: t.target_chembl_id, pref_name: t.pref_name }));
+          } else {
+            const url2 = `${CFG.chembl_base}/target/search.json?pref_name=${encodeURIComponent(g)}&limit=50`;
+            const res2 = await fetchWithRetries(url2);
+            out[g] = (res2 && res2.targets) ? res2.targets.map(t=>({ target_chembl_id: t.target_chembl_id, pref_name: t.pref_name })) : [];
+          }
+        } catch(e){
+          console.warn('Target lookup error for', g, e);
+          out[g] = [];
+        }
+      }
+    }
+    const workers = Array.from({length:concurrency},()=>worker());
+    await Promise.all(workers);
+    return out;
+  }
+
+  async function fetchActivitiesForTarget(targetChemblId, maxRecords=300){
+    const pageSize = 100;
+    let fetched = [];
+    let offset = 0;
+    while(fetched.length < maxRecords){
+      const limit = Math.min(pageSize, maxRecords - fetched.length);
+      const url = `${CFG.chembl_base}/activity.json?target_chembl_id=${encodeURIComponent(targetChemblId)}&limit=${limit}&offset=${offset}`;
+      const res = await fetchWithRetries(url);
+      if(!res || !res.activities || !res.activities.length) break;
+      fetched = fetched.concat(res.activities);
+      if(res.activities.length < limit) break;
+      offset += limit;
+      if(offset > 5000) break;
+    }
+    return fetched;
+  }
+
+  async function fetchWithRetries(url, retries=CFG.maxRetries){
+    for(let attempt=0; attempt<=retries; attempt++){
+      try{
+        const resp = await fetch(url);
+        if(!resp.ok) throw new Error('HTTP ' + resp.status);
+        return await resp.json();
+      } catch(e){
+        if(attempt === retries) throw e;
+        await delay(CFG.retryDelay * (attempt+1));
+      }
+    }
+  }
+
+  function extractIc50(act){
+    if(!act) return '';
+    if(act.standard_type && act.standard_value){
+      const val = parseFloat(act.standard_value);
+      const unit = (act.standard_units || '').toLowerCase();
+      if(isNaN(val)) return `${act.standard_value} ${act.standard_units||''}`;
+      if(unit === 'nm') return val;
+      if(unit === 'um' || unit === 'μm' || unit === 'µm') return val * 1000;
+      if(unit === 'm') return val * 1e9;
+      if(unit === 'pm') return val / 1000;
+      return val;
+    }
+    return '';
+  }
+
+  function dedupeCompounds(list){
+    const map = new Map();
+    list.forEach(r=>{
+      const id = (r.ID||'').trim();
+      if(!id) return;
+      if(!map.has(id)) map.set(id, r);
+      else {
+        const ex = map.get(id);
+        for(const k of Object.keys(r)) if(!ex[k] && r[k]) ex[k] = r[k];
+      }
+    });
+    return Array.from(map.values());
+  }
+
+  /* ===========================
+     RENDER / UI
+     =========================== */
+  function renderCompounds(rows){
+    const tbody = el('cTbody');
+    tbody.innerHTML = '';
+    rows.forEach(r=>{
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="mono">${escapeHtml(r.ID||'')}</td>
+        <td>${escapeHtml(r.Name||'')}</td>
+        <td class="mono">${escapeHtml(r.Target||'')}</td>
+        <td>${escapeHtml(r['IC50 (nM)']||'')}</td>
+        <td>${escapeHtml(r.MW||'')}</td>
+        <td class="mono">${escapeHtml(r.SMILES||'')}</td>
+        <td><div class="viewer" data-smiles="${escapeHtml(r.SMILES||'')}" id="v-${escapeHtml(r.ID||'').replace(/[^A-Za-z0-9]/g,'_')}"></div></td>
+        <td>${escapeHtml(r.Source||'')}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+    el('ccount-lbl').textContent = `${rows.length} compounds`;
+    // render viewers (SmilesDrawer)
+    setTimeout(()=>{ document.querySelectorAll('.viewer').forEach(v=>{
+      const s = v.getAttribute('data-smiles') || '';
+      if(!s) { v.innerHTML = '<div class="small muted">No SMILES</div>'; return; }
+      try{
+        const drawer = new SmilesDrawer.Drawer({width:CFG.smilesViewerSize.width, height:CFG.smilesViewerSize.height});
+        SmilesDrawer.parse(s, function(tree){
+          drawer.draw(tree, v, 'light', false);
+        }, function(err){ v.innerHTML = '<div class="small muted">Invalid SMILES</div>'; });
+      } catch(e){
+        v.innerHTML = '<div class="small muted">Viewer error</div>';
+      }
+    }) }, 80);
+  }
+
+  function filterC(){
+    const q = (el('cs').value||'').toLowerCase();
+    const targetFilter = (el('ct').value||'').toLowerCase();
+    const filtered = compounds.filter(r=>{
+      const matchesQ = !q || Object.values(r).join(' ').toLowerCase().includes(q);
+      const matchesT = !targetFilter || (r.Target||'').toLowerCase().includes(targetFilter);
+      return matchesQ && matchesT;
+    });
+    renderCompounds(filtered);
+  }
+
+  function populateTargetSelect(list){
+    const sel = el('ct');
+    sel.innerHTML = '<option value="">All Targets</option>';
+    const uniq = Array.from(new Set(list)).sort();
+    uniq.forEach(g=>{
+      const o = document.createElement('option'); o.value = g; o.textContent = g; sel.appendChild(o);
+    });
+  }
+
+  function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  /* ===========================
+     EXPORTS
+     =========================== */
+  function toCsv(rows){
+    if(!rows.length) return '';
+    const esc = v => '"' + String(v ?? '').replace(/"/g,'""') + '"';
+    const header = Object.keys(rows[0]).map(esc).join(',');
+    const lines = rows.map(r => Object.values(r).map(esc).join(','));
+    return [header, ...lines].join('\n');
+  }
+  function exportCsv(){
+    if(!compounds.length){ alert('No compounds to export'); return; }
+    downloadText(toCsv(compounds), 'compounds_export.csv', 'text/csv');
+  }
+  function exportJson(){
+    if(!compounds.length){ alert('No compounds to export'); return; }
+    downloadText(JSON.stringify(compounds, null, 2), 'compounds_export.json', 'application/json');
+  }
+  function exportSmiles(){
+    if(!compounds.length){ alert('No compounds to export'); return; }
+    const lines = compounds.map(c => `${c.ID}\t${c.SMILES||''}`);
+    downloadText(lines.join('\n'), 'compounds_smiles.tsv', 'text/tab-separated-values');
+  }
+
+  /* ===========================
+     PATHWAY ENRICHMENT (KEGG via Entrez mapping)
+     - Steps:
+       1) Map normalizedGenes -> Entrez IDs via MyGene
+       2) For each Entrez ID call KEGG REST: /link/pathway/hsa:ENTREZID
+       3) Aggregate pathways and show counts
+     =========================== */
+  async function runPathwayEnrichment(){
+    if(!normalizedGenes.length){ alert('No normalized genes. Upload and normalize first.'); return; }
+    setProgress(3, 'Mapping genes to Entrez IDs (MyGene)...');
+    // batch query MyGene for entrezgene
+    const batches = [];
+    for(let i=0;i<normalizedGenes.length;i+=200) batches.push(normalizedGenes.slice(i,i+200));
+    const geneToEntrez = {};
+    for(const batch of batches){
+      const q = batch.map(t => `symbol:${t}`).join(' OR ');
+      const params = new URLSearchParams();
+      params.set('q', q);
+      params.set('fields', 'symbol,entrezgene');
+      params.set('size', batch.length * 2);
+      const url = `${CFG.mygene_query}?${params.toString()}`;
+      try{
+        const resp = await fetch(url);
+        const data = await resp.json();
+        const hits = data.hits || [];
+        for(const h of hits){
+          if(h.symbol && h.entrezgene) geneToEntrez[h.symbol.toUpperCase()] = String(h.entrezgene);
+        }
+      } catch(e){ console.warn('MyGene mapping failed', e); }
+      await delay(200);
+    }
+    // build list of entrez ids
+    const entrezList = [];
+    for(const g of normalizedGenes){
+      if(geneToEntrez[g]) entrezList.push(geneToEntrez[g]);
+    }
+    if(!entrezList.length){ el('pathwayResults').innerHTML = '<div class="muted">No Entrez IDs found for your genes.</div>'; setProgress(0); return; }
+    setProgress(20, 'Querying KEGG for pathway links...');
+    // KEGG REST: /link/pathway/hsa:ENTREZID
+    const pathwayCounts = new Map(); // pathwayId -> {name, count, genes:[]}
+    for(const eid of entrezList){
+      try{
+        const url = `https://rest.kegg.jp/link/pathway/hsa:${encodeURIComponent(eid)}`;
+        const r = await fetch(url);
+        if(!r.ok) continue;
+        const txt = await r.text();
+        // lines like: hsa:1234\tpath:hsa04010
+        const lines = txt.trim().split(/\r?\n/).filter(Boolean);
+        for(const ln of lines){
+          const parts = ln.split('\t');
+          if(parts.length<2) continue;
+          const pathwayId = parts[1].replace('path:','').trim();
+          const entry = pathwayCounts.get(pathwayId) || {count:0, genes: new Set()};
+          entry.count++;
+          entry.genes.add(eid);
+          pathwayCounts.set(pathwayId, entry);
+        }
+      } catch(e){ console.warn('KEGG link failed for', eid, e); }
+      await delay(120);
+    }
+    // fetch pathway names for top pathways
+    const arr = Array.from(pathwayCounts.entries()).map(([pid,info])=>({pid, count:info.count, genes:Array.from(info.genes)}));
+    arr.sort((a,b)=>b.count-a.count);
+    const top = arr.slice(0,40);
+    // fetch names
+    for(const p of top){
+      try{
+        const r = await fetch(`https://rest.kegg.jp/get/${p.pid}`);
+        if(r.ok){
+          const txt = await r.text();
+          const m = txt.match(/^NAME\s+(.+)$/m);
+          p.name = m ? m[1].trim() : p.pid;
+        } else p.name = p.pid;
+      } catch(e){ p.name = p.pid; }
+      await delay(80);
+    }
+    // render
+    const html = ['<div style="display:flex;gap:.6rem;flex-wrap:wrap">'];
+    for(const p of top){
+      html.push(`<div style="min-width:260px;border:1px solid var(--b1);padding:.6rem;border-radius:6px;background:#fff">
+        <div style="font-weight:700">${escapeHtml(p.name)}</div>
+        <div class="small muted mono">${escapeHtml(p.pid)}</div>
+        <div style="margin-top:.4rem">Genes mapped: <span class="tag">${p.count}</span></div>
+        <div style="margin-top:.4rem" class="small muted">Entrez IDs: ${p.genes.slice(0,10).join(', ')}${p.genes.length>10? ' ...':''}</div>
+      </div>`);
+    }
+    html.push('</div>');
+    el('pathwayResults').innerHTML = html.join('');
+    setProgress(0, `Pathway enrichment complete — ${top.length} pathways shown.`);
+    // store for export
+    window._lastPathwayReport = top;
+  }
+
+  function exportPathways(){
+    if(!window._lastPathwayReport || !window._lastPathwayReport.length){ alert('No pathway report available. Run enrichment first.'); return; }
+    const rows = window._lastPathwayReport.map(p=>({ pathway_id: p.pid, name: p.name || '', count: p.count, genes: p.genes.join(';') }));
+    downloadText(toCsv(rows), 'pathway_report.csv', 'text/csv');
+  }
+
+  /* ===========================
+     RETROSYNTHESIS (UI)
+     - Calls /api/retrosynth on same origin (proxy) if available.
+     =========================== */
+  async function callRetrosynthesis(){
+    const s = (el('retroSmiles').value||'').trim();
+    if(!s){ alert('Enter SMILES'); return; }
+    el('retroResult').textContent = 'Running retrosynthesis (calling /api/retrosynth)...';
+    try{
+      const r = await fetch('/api/retrosynth', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({smiles:s}) });
+      if(!r.ok){
+        const txt = await r.text();
+        el('retroResult').textContent = `Proxy error: ${r.status} ${txt}`;
+        return;
+      }
+      const data = await r.json();
+      el('retroResult').textContent = JSON.stringify(data, null, 2);
+    } catch(e){
+      el('retroResult').textContent = 'No proxy found or network error. To enable retrosynthesis, run the Node proxy and implement provider call. See proxy snippet above.';
+    }
+  }
+
+  /* ===========================
+     DEBUG helpers
+     =========================== */
+  function showLoadedGenes(){ el('genePreview').value = (normalizedGenes.length?normalizedGenes:geneList).slice(0,5000).join('\n') || 'No genes loaded'; }
+  function showUnmatchedGenes(){
+    const arr = Array.from(unmatchedGenes);
+    el('genePreview').value = arr.length ? arr.join(', ') : 'All loaded genes had targets or none attempted yet.';
+  }
+  function consoleLogState(){
+    console.log('rawGeneTokens', rawGeneTokens.length, rawGeneTokens.slice(0,50));
+    console.log('geneList', geneList.length, geneList.slice(0,50));
+    console.log('normalizedGenes', normalizedGenes.length, normalizedGenes.slice(0,50));
+    console.log('unmatchedGenes', unmatchedGenes.size, Array.from(unmatchedGenes).slice(0,50));
+    console.log('compounds', compounds.length);
+    alert('State logged to console.');
+  }
+  function clearAll(){
+    rawGeneTokens = []; geneList = []; normalizedGenes = []; unmatchedGenes = new Set(); compounds = [];
+    el('genePreview').value = ''; el('cTbody').innerHTML = ''; el('ccount-lbl').textContent = '0 compounds'; el('pathwayResults').innerHTML = '';
+    populateTargetSelect([]);
+    setProgress(0,'Cleared.');
+  }
+
+  /* ===========================
+     SMALL HELPERS
+     =========================== */
+  function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  /* ===========================
+     INIT
+     =========================== */
+  (function init(){
+    // nothing to init for now
+  })();
+
+  </script>
+</body>
+</html>
