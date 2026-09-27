@@ -1,0 +1,654 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Gene→Compounds→SMILES→Pathways — Live UI</title>
+<!-- SmilesDrawer for inline 2D rendering -->
+<script src="https://cdn.jsdelivr.net/npm/smiles-drawer@2.0.1/dist/smiles-drawer.min.js"></script>
+<style>
+:root{--bg:#f7fafc;--card:#fff;--muted:#6b7280;--accent:#0ea5a4;--mono:ui-monospace,monospace}
+body{font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;margin:0;background:var(--bg);color:#0f172a}
+.wrap{max-width:1200px;margin:18px auto;padding:18px}
+.header{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+.h1{font-size:1.25rem;font-weight:700}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.card{background:var(--card);border:1px solid #e6edf0;padding:12px;border-radius:8px;box-shadow:0 1px 0 rgba(2,6,23,0.03)}
+.inp,select,button{padding:8px;border-radius:6px;border:1px solid #d1d5db;font-size:0.95rem}
+.btn{background:var(--accent);color:#fff;border:none;cursor:pointer}
+.small{font-size:0.85rem;color:var(--muted)}
+.table-wrap{max-height:420px;overflow:auto;border-radius:6px;border:1px solid #e6edf0;margin-top:8px}
+table{width:100%;border-collapse:collapse;font-size:0.86rem}
+th,td{padding:8px;border-bottom:1px solid #eef2f7;text-align:left}
+th{background:#fbfdfe;font-family:var(--mono);font-size:0.75rem;color:var(--muted);text-transform:uppercase}
+.code{font-family:var(--mono);font-size:0.82rem;background:#0f172a;color:#fff;padding:6px;border-radius:6px}
+.badge{background:#eef2f7;padding:4px 8px;border-radius:999px;font-size:0.78rem;color:var(--muted)}
+.debug{font-size:0.82rem;color:var(--muted);white-space:pre-wrap;max-height:160px;overflow:auto}
+.smiles-canvas{width:120px;height:80px}
+.footer{margin-top:12px;font-size:0.85rem;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="header">
+    <div class="h1">Gene → Compounds → SMILES → Pathways (Live)</div>
+    <div class="small">Upload mutated gene list, normalize, fetch ChEMBL, view SMILES, run pathway enrichment.</div>
+  </div>
+
+  <!-- ===== Controls ===== -->
+  <div class="card">
+    <div class="row">
+      <input id="geneFile" type="file" accept=".txt,.csv,.tsv" class="inp" />
+      <button class="btn" onclick="loadGenesFromFile()">Upload & Parse</button>
+      <button class="btn" onclick="normalizeThenFetch()">Normalize & Fetch (MyGene + ChEMBL)</button>
+      <button class="inp" onclick="exportCsv()" title="Export compounds CSV">Export CSV</button>
+      <button class="inp" onclick="exportJson()" title="Export JSON">Export JSON</button>
+      <select id="targetFilter" class="inp" onchange="filterTable()"><option value="">All Targets</option></select>
+      <input id="search" class="inp" placeholder="Search ID/Name/Target" oninput="filterTable()" />
+    </div>
+    <div class="row small" style="margin-top:8px">
+      <div class="badge" id="parsedCount">0 parsed</div>
+      <div class="badge" id="normCount">0 normalized</div>
+      <div class="badge" id="compoundCount">0 compounds</div>
+      <div style="flex:1"></div>
+      <div class="small">Progress: <span id="progress">Idle</span></div>
+    </div>
+  </div>
+
+  <!-- ===== Table & Viewer ===== -->
+  <div class="card" style="margin-top:12px">
+    <div style="display:flex;gap:12px;align-items:center;justify-content:space-between">
+      <div style="font-weight:600">Compounds</div>
+      <div class="small">Click a row to view SMILES & retrosynthesis options</div>
+    </div>
+
+    <div class="table-wrap card" id="tableWrap" style="margin-top:8px">
+      <table id="compTable">
+        <thead>
+          <tr><th>ID</th><th>Name</th><th>Target</th><th>IC50 (nM)</th><th>MW</th><th>SMILES</th><th>Viewer</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div style="display:flex;gap:12px;margin-top:10px;align-items:flex-start">
+      <div style="flex:1" class="card">
+        <div style="font-weight:600">Selected compound</div>
+        <div id="selInfo" class="small" style="margin-top:6px">None</div>
+        <div style="margin-top:8px">
+          <button class="btn" onclick="runRetrosynthesis()">Run Retrosynthesis (server proxy)</button>
+          <button class="inp" onclick="copySmiles()">Copy SMILES</button>
+        </div>
+        <div id="retroResult" class="debug" style="margin-top:8px;display:none"></div>
+      </div>
+
+      <div class="card" style="width:220px">
+        <div style="font-weight:600">SMILES Viewer</div>
+        <canvas id="smilesCanvas" class="smiles-canvas"></canvas>
+        <div class="small" style="margin-top:6px">Uses SmilesDrawer (client-side). If SMILES missing, viewer is blank.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Pathway enrichment ===== -->
+  <div class="card" style="margin-top:12px">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div style="font-weight:600">Pathway Enrichment (Reactome)</div>
+      <div class="small">Select genes then click Enrich</div>
+    </div>
+    <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+      <textarea id="genesForPathway" placeholder="Paste or use normalized genes" style="flex:1;height:80px;padding:8px;border-radius:6px;border:1px solid #e6edf0"></textarea>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <button class="btn" onclick="runPathwayEnrichment()">Enrich</button>
+        <button class="inp" onclick="exportPathway()">Export Report</button>
+      </div>
+    </div>
+    <div id="pathwayResults" style="margin-top:10px"></div>
+  </div>
+
+  <!-- ===== Debug / Unmatched ===== -->
+  <div class="card" style="margin-top:12px">
+    <div style="font-weight:600">Gene Debug & Unmatched</div>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <textarea id="genePreview" readonly style="flex:1;height:120px;padding:8px;border-radius:6px;border:1px solid #e6edf0"></textarea>
+      <div style="width:260px;display:flex;flex-direction:column;gap:8px">
+        <button class="inp" onclick="showLoadedGenes()">Show Loaded</button>
+        <button class="inp" onclick="showUnmatched()">Show Unmatched</button>
+        <button class="inp" onclick="consoleLog()">Console Log</button>
+      </div>
+    </div>
+    <div id="unmatched" class="small" style="margin-top:8px"></div>
+  </div>
+
+  <div class="footer">
+    <div><strong>Notes</strong> — This page runs entirely in the browser. Some APIs (ChEMBL, MyGene, Reactome) are public; if you hit CORS errors, run a small server proxy (Node/Express) to forward requests and store API keys. The retrosynthesis button calls <code>/api/retrosynth</code> on your server — implement that endpoint to call ASKCOS/PostEra/AiZynth. See inline comments in the script for details.</div>
+  </div>
+</div>
+
+<script>
+/* =========================
+   CONFIG & STATE
+   ========================= */
+const CFG = {
+  chembl_base: 'https://www.ebi.ac.uk/chembl/api/data',
+  mygene_query: 'https://mygene.info/v3/query',
+  reactome_enrich: 'https://reactome.org/AnalysisService/identifiers/identifiers',
+  batchSize: 20,
+  activitiesPerTarget: 200,
+  retryDelay: 900,
+  maxRetries: 2
+};
+
+let rawGeneTokens = [];
+let geneList = [];
+let normalizedGenes = [];
+let unmatchedGenes = new Set();
+let compounds = []; // array of rows {ID, Name, Target, IC50, MW, SMILES, Source}
+let selectedCompound = null;
+
+/* =========================
+   UTIL
+   ========================= */
+function delay(ms){ return new Promise(r=>setTimeout(r,ms)); }
+function el(id){ return document.getElementById(id); }
+function setProgress(s){ el('progress').textContent = s; }
+function toCsv(rows){
+  if(!rows.length) return '';
+  const esc = v => '"' + String(v ?? '').replace(/"/g,'""') + '"';
+  const header = Object.keys(rows[0]).map(esc).join(',');
+  const lines = rows.map(r => Object.values(r).map(esc).join(','));
+  return [header, ...lines].join('\n');
+}
+function downloadText(text, filename, mime='text/plain'){
+  const blob = new Blob([text], {type:mime});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download=filename; document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); },500);
+}
+
+/* =========================
+   FILE PARSING
+   ========================= */
+function loadGenesFromFile(){
+  const f = el('geneFile').files[0];
+  if(!f){ alert('Choose a gene file (.txt/.csv/.tsv)'); return; }
+  const reader = new FileReader();
+  reader.onload = e => {
+    const text = e.target.result;
+    const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+    const tokens = [];
+    for(const line of lines){
+      const parts = line.split(/[\t,;]/).map(p=>p.trim()).filter(Boolean);
+      for(const p of parts){
+        const cleaned = p.replace(/[:\(\)
+
+\[\]
+
+\{\}]/g,' ').replace(/[^A-Za-z0-9_\- ]/g,' ').trim();
+        const candidates = cleaned.split(/\s+/).filter(Boolean);
+        for(const c of candidates){
+          if(/[A-Za-z]/.test(c) && c.length>=2 && c.length<=12){
+            tokens.push(c.toUpperCase());
+          }
+        }
+      }
+    }
+    rawGeneTokens = Array.from(new Set(tokens));
+    geneList = rawGeneTokens.slice();
+    el('parsedCount').textContent = `${geneList.length} parsed`;
+    el('genePreview').value = geneList.slice(0,2000).join('\n');
+    populateTargetSelect(geneList);
+    alert('Parsed ' + geneList.length + ' candidate gene tokens. Click Normalize & Fetch to continue.');
+  };
+  reader.readAsText(f);
+}
+
+/* =========================
+   NORMALIZATION (MyGene.info)
+   ========================= */
+async function normalizeGenes(tokens){
+  const normalized = [];
+  const mapTokenToCanonical = {};
+  const batchSize = 200;
+  for(let i=0;i<tokens.length;i+=batchSize){
+    const batch = tokens.slice(i,i+batchSize);
+    const q = batch.map(t => `symbol:${t} OR alias:${t} OR name:${t}`).join(' OR ');
+    const params = new URLSearchParams();
+    params.set('q', q);
+    params.set('fields', 'symbol,name,entrezgene,ensembl');
+    params.set('size', batch.length * 2);
+    const url = `${CFG.mygene_query}?${params.toString()}`;
+    try{
+      const resp = await fetch(url);
+      if(!resp.ok) throw new Error('MyGene error ' + resp.status);
+      const data = await resp.json();
+      const hits = data.hits || [];
+      const hitByQuery = {};
+      for(const h of hits){
+        const sym = (h.symbol || '').toUpperCase();
+        if(sym) hitByQuery[sym] = h;
+        if(h.alias && Array.isArray(h.alias)){
+          for(const a of h.alias) hitByQuery[String(a).toUpperCase()] = h;
+        }
+      }
+      for(const t of batch){
+        const h = hitByQuery[t] || hitByQuery[t.replace(/-/g,'')] || null;
+        if(h && h.symbol) mapTokenToCanonical[t] = h.symbol.toUpperCase();
+        else mapTokenToCanonical[t] = null;
+      }
+    } catch(e){
+      console.warn('MyGene batch failed', e);
+      for(const t of batch) mapTokenToCanonical[t] = null;
+    }
+    await delay(200);
+  }
+  for(const t of tokens){
+    const canon = mapTokenToCanonical[t];
+    if(canon) normalized.push(canon);
+    else normalized.push(t);
+  }
+  const uniq = Array.from(new Set(normalized));
+  normalizedGenes = uniq;
+  return uniq;
+}
+
+/* =========================
+   MAIN: normalizeThenFetch
+   ========================= */
+async function normalizeThenFetch(){
+  if(!geneList.length){ alert('No genes parsed. Upload file first.'); return; }
+  setProgress('Normalizing gene symbols (MyGene.info)...');
+  try{
+    const norm = await normalizeGenes(geneList);
+    el('genePreview').value = norm.slice(0,2000).join('\n');
+    el('normCount').textContent = `${norm.length} normalized`;
+    populateTargetSelect(norm);
+    unmatchedGenes = new Set();
+    compounds = [];
+    renderCompounds([]);
+    await startFetchForGenes(norm);
+  } catch(e){
+    console.error('Normalization failed', e);
+    alert('Normalization failed. See console.');
+  } finally {
+    setProgress('Idle');
+  }
+}
+
+/* =========================
+   ChEMBL pipeline (targets -> activities -> SMILES)
+   - For each gene: search targets by synonym/pref_name
+   - For each target: fetch activities, then fetch molecule endpoint for SMILES if needed
+   ========================= */
+async function startFetchForGenes(genes){
+  if(!genes || !genes.length) { alert('No genes to fetch'); return; }
+  setProgress('Resolving targets and fetching compounds...');
+  compounds = [];
+  for(let i=0;i<genes.length;i+=CFG.batchSize){
+    const batch = genes.slice(i,i+CFG.batchSize);
+    setProgress(`Resolving targets for genes ${i+1}-${i+batch.length} of ${genes.length}...`);
+    const targetsMap = await fetchTargetsForGenes(batch);
+    for(const g of batch){
+      const tlist = targetsMap[g] || [];
+      if(!tlist.length){ unmatchedGenes.add(g); continue; }
+      for(const t of tlist){
+        setProgress(`Fetching activities for ${t.target_chembl_id} (${g})...`);
+        try{
+          const acts = await fetchActivitiesForTarget(t.target_chembl_id, CFG.activitiesPerTarget);
+          for(const a of acts){
+            // prefer molecule_chembl_id to fetch SMILES
+            let smiles = '';
+            if(a.molecule_chembl_id){
+              try{
+                const mol = await fetchWithRetries(`${CFG.chembl_base}/molecule/${encodeURIComponent(a.molecule_chembl_id)}.json`);
+                if(mol && mol.molecule_structures && mol.molecule_structures.canonical_smiles) smiles = mol.molecule_structures.canonical_smiles;
+                else if(mol && mol.molecule_structures && mol.molecule_structures.smiles) smiles = mol.molecule_structures.smiles;
+              } catch(e){
+                // ignore SMILES fetch failure
+              }
+            } else if(a.molecule_structures && a.molecule_structures.canonical_smiles){
+              smiles = a.molecule_structures.canonical_smiles;
+            }
+            const row = {
+              ID: a.molecule_chembl_id || '',
+              Name: a.molecule_pref_name || a.pref_name || '',
+              Target: g,
+              IC50: extractIc50(a),
+              MW: a.molecule_properties ? a.molecule_properties.full_molweight : '',
+              SMILES: smiles || '',
+              Source: 'ChEMBL'
+            };
+            compounds.push(row);
+          }
+          compounds = dedupeCompounds(compounds);
+          renderCompounds(compounds);
+        } catch(e){
+          console.warn('Activities fetch failed for', t.target_chembl_id, e);
+        }
+        await delay(120);
+      }
+    }
+    await delay(300);
+  }
+  setProgress(`Done. ${compounds.length} unique compounds collected.`);
+}
+
+/* Fetch targets for genes (parallel workers) */
+async function fetchTargetsForGenes(genes){
+  const out = {};
+  const concurrency = 6;
+  let idx = 0;
+  async function worker(){
+    while(idx < genes.length){
+      const g = genes[idx++];
+      try{
+        const url = `${CFG.chembl_base}/target/search.json?target_synonym=${encodeURIComponent(g)}&limit=50`;
+        const res = await fetchWithRetries(url);
+        if(res && res.targets && res.targets.length){
+          out[g] = res.targets.map(t=>({ target_chembl_id: t.target_chembl_id, pref_name: t.pref_name }));
+        } else {
+          const url2 = `${CFG.chembl_base}/target/search.json?pref_name=${encodeURIComponent(g)}&limit=50`;
+          const res2 = await fetchWithRetries(url2);
+          out[g] = (res2 && res2.targets) ? res2.targets.map(t=>({ target_chembl_id: t.target_chembl_id, pref_name: t.pref_name })) : [];
+        }
+      } catch(e){
+        console.warn('Target lookup error for', g, e);
+        out[g] = [];
+      }
+    }
+  }
+  const workers = Array.from({length:concurrency},()=>worker());
+  await Promise.all(workers);
+  return out;
+}
+
+/* Fetch activities for a target (paginated) */
+async function fetchActivitiesForTarget(targetChemblId, maxRecords=200){
+  const pageSize = 100;
+  let fetched = [];
+  let offset = 0;
+  while(fetched.length < maxRecords){
+    const limit = Math.min(pageSize, maxRecords - fetched.length);
+    const url = `${CFG.chembl_base}/activity.json?target_chembl_id=${encodeURIComponent(targetChemblId)}&limit=${limit}&offset=${offset}`;
+    const res = await fetchWithRetries(url);
+    if(!res || !res.activities || !res.activities.length) break;
+    fetched = fetched.concat(res.activities);
+    if(res.activities.length < limit) break;
+    offset += limit;
+    if(offset > 5000) break;
+  }
+  return fetched;
+}
+
+/* fetch with retries */
+async function fetchWithRetries(url, retries=CFG.maxRetries){
+  for(let attempt=0; attempt<=retries; attempt++){
+    try{
+      const resp = await fetch(url);
+      if(!resp.ok) throw new Error('HTTP ' + resp.status);
+      return await resp.json();
+    } catch(e){
+      if(attempt === retries) throw e;
+      await delay(CFG.retryDelay * (attempt+1));
+    }
+  }
+}
+
+/* extract IC50 */
+function extractIc50(act){
+  if(!act) return '';
+  if(act.standard_type && act.standard_value){
+    const val = parseFloat(act.standard_value);
+    const unit = (act.standard_units || '').toLowerCase();
+    if(isNaN(val)) return `${act.standard_value} ${act.standard_units||''}`;
+    if(unit === 'nm') return val;
+    if(unit === 'um' || unit === 'μm' || unit === 'µm') return val * 1000;
+    if(unit === 'm') return val * 1e9;
+    if(unit === 'pm') return val / 1000;
+    return val;
+  }
+  return '';
+}
+
+/* dedupe compounds by ID */
+function dedupeCompounds(list){
+  const map = new Map();
+  list.forEach(r=>{
+    const id = (r.ID||'').trim();
+    if(!id) return;
+    if(!map.has(id)) map.set(id, r);
+    else {
+      const ex = map.get(id);
+      for(const k of Object.keys(r)) if(!ex[k] && r[k]) ex[k] = r[k];
+    }
+  });
+  return Array.from(map.values());
+}
+
+/* =========================
+   RENDERING & INTERACTIONS
+   ========================= */
+function renderCompounds(rows){
+  const tbody = el('compTable').querySelector('tbody');
+  tbody.innerHTML = '';
+  rows.forEach((r, idx)=>{
+    const tr = document.createElement('tr');
+    tr.style.cursor = 'pointer';
+    tr.onclick = ()=>selectCompound(r);
+    tr.innerHTML = `
+      <td>${escapeHtml(r.ID)}</td>
+      <td>${escapeHtml(r.Name)}</td>
+      <td>${escapeHtml(r.Target)}</td>
+      <td>${escapeHtml(r.IC50)}</td>
+      <td>${escapeHtml(r.MW)}</td>
+      <td>${escapeHtml(r.SMILES)}</td>
+      <td><button class="inp" onclick="event.stopPropagation(); drawSmiles('${escapeHtmlAttr(r.SMILES)}')">View</button></td>
+    `;
+    tbody.appendChild(tr);
+  });
+  el('compoundCount').textContent = `${rows.length} compounds`;
+  // update target filter options
+  populateTargetSelect(Array.from(new Set(rows.map(r=>r.Target).filter(Boolean))));
+}
+
+/* helper to escape HTML */
+function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function escapeHtmlAttr(s){ return (s||'').replace(/'/g,"\\'").replace(/"/g,'\\"'); }
+
+/* select compound */
+function selectCompound(r){
+  selectedCompound = r;
+  el('selInfo').innerHTML = `<div style="font-weight:600">${escapeHtml(r.Name||r.ID)}</div>
+    <div class="small">Target: ${escapeHtml(r.Target)} | IC50: ${escapeHtml(r.IC50)} nM</div>
+    <div class="small" style="margin-top:6px">SMILES: <code class="code">${escapeHtml(r.SMILES||'')}</code></div>`;
+  if(r.SMILES) drawSmiles(r.SMILES);
+  el('retroResult').style.display = 'none';
+}
+
+/* draw SMILES using SmilesDrawer */
+async function drawSmiles(smiles){
+  const canvas = el('smilesCanvas');
+  const drawer = new SmilesDrawer.Drawer({width:120,height:80});
+  try{
+    const tree = await SmilesDrawer.parse(smiles || '');
+    SmilesDrawer.draw(tree, canvas, 'light', false);
+  } catch(e){
+    // clear canvas
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+  }
+}
+
+/* filter table */
+function filterTable(){
+  const q = (el('search').value||'').toLowerCase();
+  const tfilter = (el('targetFilter').value||'').toLowerCase();
+  const filtered = compounds.filter(r=>{
+    const matchesQ = !q || Object.values(r).join(' ').toLowerCase().includes(q);
+    const matchesT = !tfilter || (r.Target||'').toLowerCase().includes(tfilter);
+    return matchesQ && matchesT;
+  });
+  renderCompounds(filtered);
+}
+
+/* populate target select */
+function populateTargetSelect(list){
+  const sel = el('targetFilter');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">All Targets</option>';
+  const arr = Array.from(new Set(list)).sort();
+  arr.forEach(g=>{
+    const o = document.createElement('option'); o.value = g; o.textContent = g; sel.appendChild(o);
+  });
+  sel.value = current || '';
+}
+
+/* exports */
+function exportCsv(){ if(!compounds.length){ alert('No compounds'); return; } downloadText(toCsv(compounds),'compounds.csv','text/csv'); }
+function exportJson(){ if(!compounds.length){ alert('No compounds'); return; } downloadText(JSON.stringify(compounds,null,2),'compounds.json','application/json'); }
+
+/* copy smiles */
+function copySmiles(){ if(!selectedCompound || !selectedCompound.SMILES){ alert('No SMILES selected'); return; } navigator.clipboard.writeText(selectedCompound.SMILES).then(()=>alert('SMILES copied')); }
+
+/* =========================
+   PATHWAY ENRICHMENT (Reactome)
+   - POST identifiers (gene symbols) to Reactome AnalysisService
+   - Then fetch pathway summary for top pathways
+   ========================= */
+async function runPathwayEnrichment(){
+  const txt = el('genesForPathway').value.trim();
+  if(!txt){ alert('Paste normalized gene symbols (one per line)'); return; }
+  const ids = txt.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+  setProgress('Running Reactome enrichment...');
+  try{
+    // Reactome expects POST with newline-separated identifiers
+    const resp = await fetch(CFG.reactome_enrich, {
+      method:'POST',
+      headers:{'Content-Type':'text/plain'},
+      body: ids.join('\n')
+    });
+    if(!resp.ok) throw new Error('Reactome error ' + resp.status);
+    const data = await resp.json();
+    // data contains pathway summaries under 'pathways' or 'results' depending on endpoint; show raw for now
+    renderPathwayResults(data);
+  } catch(e){
+    console.error('Pathway enrichment failed', e);
+    alert('Pathway enrichment failed. See console.');
+  } finally {
+    setProgress('Idle');
+  }
+}
+
+function renderPathwayResults(data){
+  const out = el('pathwayResults');
+  out.innerHTML = '<div style="font-weight:600;margin-bottom:6px">Pathway Enrichment Results</div>';
+  // If Reactome returns a list of pathways
+  if(Array.isArray(data) && data.length){
+    const table = document.createElement('table');
+    table.style.width='100%';
+    table.innerHTML = `<thead><tr><th>Pathway</th><th>Entities</th><th>p-value</th></tr></thead>`;
+    const tbody = document.createElement('tbody');
+    data.slice(0,50).forEach(p=>{
+      const tr = document.createElement('tr');
+      const name = p.stId ? `${p.stId} — ${p.displayName||p.name||''}` : (p.name||p.displayName||'');
+      const count = p.entities ? p.entities.length : (p.numberOfEntities || '');
+      const pval = p.pValue || p.p_value || '';
+      tr.innerHTML = `<td>${escapeHtml(name)}</td><td>${escapeHtml(String(count))}</td><td>${escapeHtml(String(pval))}</td>`;
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    out.appendChild(table);
+  } else {
+    out.appendChild(document.createTextNode(JSON.stringify(data,null,2)));
+  }
+}
+
+/* export pathway report */
+function exportPathway(){
+  const html = el('pathwayResults').innerText || '';
+  if(!html) return alert('No pathway results');
+  downloadText(html,'pathway_report.txt','text/plain');
+}
+
+/* =========================
+   RETROSYNTHESIS (hook)
+   - This function calls a server endpoint /api/retrosynth with {smiles}
+   - Implement server proxy to call ASKCOS/PostEra/AiZynth and return JSON
+   ========================= */
+async function runRetrosynthesis(){
+  if(!selectedCompound || !selectedCompound.SMILES){ alert('Select a compound with SMILES'); return; }
+  const smiles = selectedCompound.SMILES;
+  el('retroResult').style.display = 'block';
+  el('retroResult').textContent = 'Requesting retrosynthesis routes...';
+  try{
+    // IMPORTANT: For production, implement a server proxy at /api/retrosynth that stores API keys and forwards requests.
+    // Example request body: { smiles: "CCO" }
+    const resp = await fetch('/api/retrosynth', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({smiles})
+    });
+    if(!resp.ok) throw new Error('Retrosynth proxy error ' + resp.status);
+    const data = await resp.json();
+    el('retroResult').textContent = JSON.stringify(data,null,2);
+  } catch(e){
+    console.error('Retrosynthesis failed', e);
+    el('retroResult').textContent = 'Retrosynthesis failed. Implement /api/retrosynth proxy or check console.';
+  }
+}
+
+/* =========================
+   DEBUG helpers
+   ========================= */
+function showLoadedGenes(){ el('genePreview').value = (normalizedGenes.length?normalizedGenes:geneList).slice(0,5000).join('\n') || 'No genes loaded'; }
+function showUnmatched(){ el('unmatched').textContent = Array.from(unmatchedGenes).slice(0,1000).join(', ') || 'None'; }
+function consoleLog(){ console.log({rawGeneTokens,geneList,normalizedGenes,unmatchedGenes,compounds}); alert('State logged to console'); }
+
+/* =========================
+   Small helpers
+   ========================= */
+function escapeCsvCell(s){ return `"${String(s||'').replace(/"/g,'""')}"`; }
+
+/* =========================
+   SMILES DRAWER init (optional)
+   ========================= */
+SmilesDrawer.applyPalette('light', {
+  backgroundColor: '#ffffff',
+  atomColor: '#111827',
+  bondColor: '#111827'
+});
+
+/* =========================
+   Utility: fetch with retries wrapper for public endpoints
+   ========================= */
+async function fetchJson(url, opts){
+  const resp = await fetch(url, opts);
+  if(!resp.ok) throw new Error('HTTP ' + resp.status);
+  return resp.json();
+}
+
+/* =========================
+   Helper: populate initial UI from uploaded gene list
+   ========================= */
+function populateTargetSelect(list){
+  const sel = el('targetFilter');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">All Targets</option>';
+  const arr = Array.from(new Set(list)).sort();
+  arr.forEach(g=>{
+    const o = document.createElement('option'); o.value = g; o.textContent = g; sel.appendChild(o);
+  });
+  sel.value = current || '';
+}
+
+/* =========================
+   Small HTML escape for attributes
+   ========================= */
+function escapeHtmlAttr(s){ return (s||'').replace(/'/g,"\\'").replace(/"/g,'\\"'); }
+
+/* =========================
+   End of script
+   ========================= */
+</script>
+</body>
+</html>
