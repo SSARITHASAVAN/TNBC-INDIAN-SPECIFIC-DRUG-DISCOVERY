@@ -306,26 +306,436 @@ tr:last-child td{border-bottom:none;}
 </div>
 
 <!-- ══════════════ COMPOUNDS -->
+<!-- Replace your existing <div id="p-compounds"> ... </div> with this block -->
 <div id="p-compounds" class="panel">
-<div class="wrap">
-  <div class="ptitle">⚗️ Compound Database</div>
-  <div class="psub">Pre-loaded compounds + your fetched API data + your uploads. All searchable, filterable, downloadable.</div>
-  <div style="display:flex;gap:.5rem;margin-bottom:.875rem;flex-wrap:wrap;align-items:center;">
-    <input class="inp" style="flex:1;min-width:140px;" id="cs" placeholder="Search ID, target, source…" oninput="filterC()">
-    <select class="sel" id="ct" onchange="filterC()"><option value="">All Targets</option><option>BRCA1</option><option>PARP1</option><option>EGFR</option><option>PI3Kα</option><option>STAT3</option><option>AR</option><option>Unknown</option></select>
-    <select class="sel" id="csrc" onchange="filterC()"><option value="">All Sources</option><option>ChEMBL API</option><option>PubChem API</option><option>DrugBank</option><option>GDSC</option><option>User Upload</option><option>Base</option></select>
-    <button class="btn-xs" onclick="exportCsv('compounds')">↓ CSV</button>
-    <button class="btn-xs" onclick="exportJson('compounds')">↓ JSON</button>
-    <button class="btn-xs" onclick="exportSmiles()">↓ SMILES</button>
-    <span style="font-family:var(--mono);font-size:.62rem;color:var(--t3)" id="ccount-lbl"></span>
-  </div>
-  <div class="tscroll" style="max-height:500px;overflow-y:auto;">
-  <table><thead><tr>
-    <th>ID</th><th>Name</th><th>Target</th><th>GNN Score</th><th>Docking</th><th>IC50 (nM)</th><th>ADMET</th><th>Stage</th><th>MW</th><th>Source</th>
-  </tr></thead><tbody id="cTbody"></tbody></table>
+  <div class="wrap">
+    <div class="ptitle">⚗️ Compound Database (Gene-driven fetch)</div>
+    <div class="psub">Upload mutated gene list, normalize symbols, fetch ChEMBL targets & compounds. Shows loaded/unmatched genes.</div>
+
+    <div style="display:flex;gap:.5rem;margin-bottom:.875rem;flex-wrap:wrap;align-items:center;">
+      <input class="inp" style="flex:1;min-width:140px;" id="cs" placeholder="Search ID, target, source…" oninput="filterC()">
+
+      <select class="sel" id="ct" onchange="filterC()">
+        <option value="">All Targets</option>
+        <option>BRCA1</option><option>PARP1</option><option>EGFR</option><option>PI3Kα</option><option>STAT3</option><option>AR</option><option>Unknown</option>
+      </select>
+
+      <select class="sel" id="csrc" onchange="filterC()">
+        <option value="">All Sources</option>
+        <option>ChEMBL API</option><option>PubChem API</option><option>DrugBank</option><option>GDSC</option><option>User Upload</option><option>Base</option>
+      </select>
+
+      <input id="geneFile" type="file" accept=".txt,.csv,.tsv" style="display:inline-block">
+      <button class="btn-xs" onclick="loadGenesFromFile()">Upload Genes</button>
+
+      <button class="btn-xs" onclick="normalizeThenFetch()">Normalize & Fetch</button>
+
+      <button class="btn-xs" onclick="exportCsv('compounds')">↓ CSV</button>
+      <button class="btn-xs" onclick="exportJson('compounds')">↓ JSON</button>
+      <button class="btn-xs" onclick="exportSmiles()">↓ SMILES</button>
+
+      <span style="font-family:var(--mono);font-size:.62rem;color:var(--t3)" id="ccount-lbl"></span>
+    </div>
+
+    <div class="tscroll" style="max-height:420px;overflow-y:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th><th>Name</th><th>Target</th><th>GNN Score</th><th>Docking</th><th>IC50 (nM)</th><th>ADMET</th><th>Stage</th><th>MW</th><th>Source</th>
+          </tr>
+        </thead>
+        <tbody id="cTbody"></tbody>
+      </table>
+    </div>
+
+    <div style="margin-top:.5rem;font-size:.85rem;color:var(--t2)">
+      <span id="progressLbl">Idle.</span>
+    </div>
+
+    <!-- Debug panel: shows loaded genes and unmatched genes -->
+    <div id="gene-debug" style="margin-top:0.75rem;padding:.6rem;border:1px dashed var(--b1);background:var(--s1);font-size:.85rem;">
+      <div style="font-weight:600;margin-bottom:.25rem;">Gene Debug</div>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;">
+        <textarea id="genePreview" readonly style="flex:1;min-height:120px;padding:.5rem;font-family:var(--mono);font-size:.82rem;"></textarea>
+        <div style="width:220px;">
+          <button class="btn-xs" onclick="showLoadedGenes()">Show Loaded Genes</button>
+          <button class="btn-xs" onclick="showUnmatchedGenes()">Show Unmatched Genes</button>
+          <button class="btn-xs" onclick="consoleLogState()">Console Log State</button>
+        </div>
+      </div>
+      <div id="unmatchedList" style="margin-top:.5rem;color:var(--t2);max-height:120px;overflow:auto;"></div>
+    </div>
+
   </div>
 </div>
-</div>
+
+<script>
+/* ---------- CONFIG ---------- */
+const CFG = {
+  chembl_base: 'https://www.ebi.ac.uk/chembl/api/data',
+  mygene_query: 'https://mygene.info/v3/query',
+  batchSize: 20,
+  activitiesPerTarget: 300,
+  retryDelay: 1200,
+  maxRetries: 2
+};
+
+/* ---------- STATE ---------- */
+let rawGeneTokens = [];      // raw tokens parsed from file
+let geneList = [];           // cleaned tokens (candidate symbols)
+let normalizedGenes = [];    // canonical symbols after MyGene normalization
+let unmatchedGenes = new Set();
+let compounds = [];
+let isRunning = false;
+
+/* ---------- UTIL ---------- */
+function delay(ms){ return new Promise(r=>setTimeout(r,ms)); }
+function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function downloadText(text, filename, mime){
+  const blob = new Blob([text], {type:mime});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download=filename; document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); },500);
+}
+function toCsv(rows){
+  if(!rows.length) return '';
+  const esc = v => '"' + String(v ?? '').replace(/"/g,'""') + '"';
+  const header = Object.keys(rows[0]).map(esc).join(',');
+  const lines = rows.map(r => Object.values(r).map(esc).join(','));
+  return [header, ...lines].join('\n');
+}
+
+/* ---------- FILE PARSING ---------- */
+/* Robust parser: extracts uppercase-like gene tokens from each line.
+   - Accepts lines with extra annotations and extracts likely gene symbols (A-Z0-9_-).
+   - Keeps tokens that look like gene symbols (2-10 chars, letters/numbers, not long genomic coords).
+*/
+function loadGenesFromFile(){
+  const f = document.getElementById('geneFile').files[0];
+  if(!f){ alert('Choose a gene file (.txt, .csv, .tsv)'); return; }
+  const reader = new FileReader();
+  reader.onload = e => {
+    const text = e.target.result;
+    const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+    const tokens = [];
+    for(const line of lines){
+      // try simple split first (comma/tab)
+      const parts = line.split(/[\t,;]/).map(p=>p.trim()).filter(Boolean);
+      // from each part, extract uppercase-like gene tokens using regex
+      for(const p of parts){
+        // remove common annotations like :mut, (p.), chr:, ENSG ids etc.
+        // If part contains ENSG or ENSP, skip as we prefer symbols; but keep if no symbol found
+        const cleaned = p.replace(/[:\(\)
+
+\[\]
+
+\{\}]/g,' ').replace(/[^A-Za-z0-9_\- ]/g,' ').trim();
+        const candidates = cleaned.split(/\s+/).filter(Boolean);
+        for(const c of candidates){
+          // heuristics: symbol-like if length 2-12 and contains letters
+          if(/[A-Za-z]/.test(c) && c.length>=2 && c.length<=12){
+            tokens.push(c.toUpperCase());
+          }
+        }
+      }
+    }
+    // dedupe and store
+    rawGeneTokens = Array.from(new Set(tokens));
+    geneList = rawGeneTokens.slice(); // initial candidate list
+    document.getElementById('ccount-lbl').textContent = `${geneList.length} gene tokens parsed`;
+    document.getElementById('genePreview').value = geneList.slice(0,1000).join('\\n');
+    alert('Parsed ' + geneList.length + ' candidate gene tokens. Click Normalize & Fetch to continue.');
+  };
+  reader.readAsText(f);
+}
+
+/* ---------- NORMALIZATION (MyGene.info) ---------- */
+/* Batch normalize symbols using MyGene.info query endpoint.
+   For each token we request symbol/name/entrez/ensembl; we map to canonical symbol when possible.
+*/
+async function normalizeGenes(tokens){
+  const normalized = [];
+  const mapTokenToCanonical = {};
+  const batchSize = 200; // MyGene can accept larger queries; keep moderate
+  for(let i=0;i<tokens.length;i+=batchSize){
+    const batch = tokens.slice(i,i+batchSize);
+    // build q as OR of tokens, search in symbol and alias fields
+    const q = batch.map(t => `symbol:${t} OR alias:${t} OR name:${t}`).join(' OR ');
+    const params = new URLSearchParams();
+    params.set('q', q);
+    params.set('fields', 'symbol,name,entrezgene,ensembl');
+    params.set('size', batch.length * 2);
+    const url = `${CFG.mygene_query}?${params.toString()}`;
+    try{
+      const resp = await fetch(url);
+      if(!resp.ok) throw new Error('MyGene error ' + resp.status);
+      const data = await resp.json();
+      const hits = data.hits || data.hits || [];
+      // map hits by symbol and aliases
+      const hitByQuery = {};
+      for(const h of hits){
+        const sym = (h.symbol || '').toUpperCase();
+        if(sym) hitByQuery[sym] = h;
+        // also map aliases if present
+        if(h.alias && Array.isArray(h.alias)){
+          for(const a of h.alias) hitByQuery[String(a).toUpperCase()] = h;
+        }
+      }
+      // assign canonical symbol for each token in batch
+      for(const t of batch){
+        const h = hitByQuery[t] || hitByQuery[t.replace(/-/g,'')] || null;
+        if(h && h.symbol) {
+          mapTokenToCanonical[t] = h.symbol.toUpperCase();
+        } else {
+          mapTokenToCanonical[t] = null;
+        }
+      }
+    } catch(e){
+      console.warn('MyGene batch failed', e);
+      // on failure, mark tokens as null so they will be attempted as-is
+      for(const t of batch) mapTokenToCanonical[t] = null;
+    }
+    await delay(200);
+  }
+  // build normalized list: prefer canonical symbol, else original token
+  for(const t of tokens){
+    const canon = mapTokenToCanonical[t];
+    if(canon) normalized.push(canon);
+    else normalized.push(t); // keep original as fallback
+  }
+  // dedupe
+  const uniq = Array.from(new Set(normalized));
+  normalizedGenes = uniq;
+  return uniq;
+}
+
+/* ---------- MAIN: normalize then fetch ---------- */
+async function normalizeThenFetch(){
+  if(isRunning) return;
+  if(!geneList.length){ alert('No genes parsed. Upload file first.'); return; }
+  isRunning = true;
+  document.getElementById('progressLbl').textContent = 'Normalizing gene symbols (MyGene.info)...';
+  try{
+    const norm = await normalizeGenes(geneList);
+    document.getElementById('genePreview').value = norm.slice(0,2000).join('\\n');
+    document.getElementById('ccount-lbl').textContent = `${norm.length} normalized genes`;
+    // clear previous unmatched and compounds
+    unmatchedGenes = new Set();
+    compounds = [];
+    document.getElementById('cTbody').innerHTML = '';
+    // now call the ChEMBL pipeline using normalizedGenes
+    await startFetchForGenes(norm);
+  } catch(e){
+    console.error('Normalization failed', e);
+    alert('Normalization failed. See console for details.');
+  } finally {
+    isRunning = false;
+  }
+}
+
+/* ---------- ChEMBL pipeline (same logic as earlier) ---------- */
+async function startFetchForGenes(genes){
+  if(!genes || !genes.length) { alert('No genes to fetch'); return; }
+  document.getElementById('progressLbl').textContent = 'Resolving targets and fetching compounds...';
+  compounds = [];
+  for(let i=0;i<genes.length;i+=CFG.batchSize){
+    const batch = genes.slice(i,i+CFG.batchSize);
+    document.getElementById('progressLbl').textContent = `Resolving targets for genes ${i+1}-${i+batch.length} of ${genes.length}...`;
+    const targetsMap = await fetchTargetsForGenes(batch);
+    for(const g of batch){
+      const tlist = targetsMap[g] || [];
+      if(!tlist.length){ unmatchedGenes.add(g); continue; }
+      for(const t of tlist){
+        document.getElementById('progressLbl').textContent = `Fetching activities for ${t.target_chembl_id} (${g})...`;
+        try{
+          const acts = await fetchActivitiesForTarget(t.target_chembl_id, CFG.activitiesPerTarget);
+          acts.forEach(a=>{
+            const row = {
+              ID: a.molecule_chembl_id || '',
+              Name: a.molecule_pref_name || a.pref_name || '',
+              Target: g,
+              'GNN Score': '',
+              Docking: '',
+              'IC50 (nM)': extractIc50(a),
+              ADMET: '',
+              Stage: a.assay_chembl_id || '',
+              MW: a.molecule_properties ? a.molecule_properties.full_molweight : '',
+              Source: 'ChEMBL'
+            };
+            compounds.push(row);
+          });
+          compounds = dedupeCompounds(compounds);
+          renderCompounds(compounds);
+        } catch(e){
+          console.warn('Activities fetch failed for', t.target_chembl_id, e);
+        }
+        await delay(150);
+      }
+    }
+    await delay(300);
+  }
+  document.getElementById('progressLbl').textContent = `Done. ${compounds.length} unique compounds collected.`;
+}
+
+/* Fetch ChEMBL targets for genes (parallel workers) */
+async function fetchTargetsForGenes(genes){
+  const out = {};
+  const concurrency = 6;
+  let idx = 0;
+  async function worker(){
+    while(idx < genes.length){
+      const g = genes[idx++];
+      try{
+        const url = `${CFG.chembl_base}/target/search.json?target_synonym=${encodeURIComponent(g)}&limit=50`;
+        const res = await fetchWithRetries(url);
+        if(res && res.targets && res.targets.length){
+          out[g] = res.targets.map(t=>({ target_chembl_id: t.target_chembl_id, pref_name: t.pref_name }));
+        } else {
+          // fallback by pref_name
+          const url2 = `${CFG.chembl_base}/target/search.json?pref_name=${encodeURIComponent(g)}&limit=50`;
+          const res2 = await fetchWithRetries(url2);
+          out[g] = (res2 && res2.targets) ? res2.targets.map(t=>({ target_chembl_id: t.target_chembl_id, pref_name: t.pref_name })) : [];
+        }
+      } catch(e){
+        console.warn('Target lookup error for', g, e);
+        out[g] = [];
+      }
+    }
+  }
+  const workers = Array.from({length:concurrency},()=>worker());
+  await Promise.all(workers);
+  return out;
+}
+
+/* Fetch activities for a target (paginated) */
+async function fetchActivitiesForTarget(targetChemblId, maxRecords=300){
+  const pageSize = 100;
+  let fetched = [];
+  let offset = 0;
+  while(fetched.length < maxRecords){
+    const limit = Math.min(pageSize, maxRecords - fetched.length);
+    const url = `${CFG.chembl_base}/activity.json?target_chembl_id=${encodeURIComponent(targetChemblId)}&limit=${limit}&offset=${offset}`;
+    const res = await fetchWithRetries(url);
+    if(!res || !res.activities || !res.activities.length) break;
+    fetched = fetched.concat(res.activities);
+    if(res.activities.length < limit) break;
+    offset += limit;
+    if(offset > 5000) break;
+  }
+  return fetched;
+}
+
+/* fetch with retries */
+async function fetchWithRetries(url, retries=CFG.maxRetries){
+  for(let attempt=0; attempt<=retries; attempt++){
+    try{
+      const resp = await fetch(url);
+      if(!resp.ok) throw new Error('HTTP ' + resp.status);
+      return await resp.json();
+    } catch(e){
+      if(attempt === retries) throw e;
+      await delay(CFG.retryDelay * (attempt+1));
+    }
+  }
+}
+
+/* extract IC50 */
+function extractIc50(act){
+  if(!act) return '';
+  if(act.standard_type && act.standard_value){
+    const val = parseFloat(act.standard_value);
+    const unit = (act.standard_units || '').toLowerCase();
+    if(isNaN(val)) return `${act.standard_value} ${act.standard_units||''}`;
+    if(unit === 'nm') return val;
+    if(unit === 'um' || unit === 'μm' || unit === 'µm') return val * 1000;
+    if(unit === 'm') return val * 1e9;
+    if(unit === 'pm') return val / 1000;
+    return val;
+  }
+  return '';
+}
+
+/* dedupe compounds */
+function dedupeCompounds(list){
+  const map = new Map();
+  list.forEach(r=>{
+    const id = (r.ID||'').trim();
+    if(!id) return;
+    if(!map.has(id)) map.set(id, r);
+    else {
+      const ex = map.get(id);
+      for(const k of Object.keys(r)) if(!ex[k] && r[k]) ex[k] = r[k];
+    }
+  });
+  return Array.from(map.values());
+}
+
+/* render compounds */
+function renderCompounds(rows){
+  const tbody = document.getElementById('cTbody');
+  tbody.innerHTML = '';
+  rows.forEach(r=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${escapeHtml(r.ID||'')}</td>
+      <td>${escapeHtml(r.Name||'')}</td>
+      <td>${escapeHtml(r.Target||'')}</td>
+      <td>${escapeHtml(r['GNN Score']||'')}</td>
+      <td>${escapeHtml(r.Docking||'')}</td>
+      <td>${escapeHtml(r['IC50 (nM)']||'')}</td>
+      <td>${escapeHtml(r.ADMET||'')}</td>
+      <td>${escapeHtml(r.Stage||'')}</td>
+      <td>${escapeHtml(r.MW||'')}</td>
+      <td>${escapeHtml(r.Source||'')}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+  document.getElementById('ccount-lbl').textContent = `${rows.length} compounds`;
+}
+
+/* exports */
+function exportCsv(kind){
+  if(!compounds.length){ alert('No compounds to export'); return; }
+  const csv = toCsv(compounds);
+  downloadText(csv, 'compounds_export.csv', 'text/csv');
+}
+function exportJson(kind){
+  if(!compounds.length){ alert('No compounds to export'); return; }
+  downloadText(JSON.stringify(compounds, null, 2), 'compounds_export.json', 'application/json');
+}
+function exportSmiles(){ alert('SMILES export not implemented. Extend activity parsing to include molecule_structures.smiles.'); }
+
+/* filter placeholder */
+function filterC(){
+  const q = (document.getElementById('cs').value||'').toLowerCase();
+  const targetFilter = (document.getElementById('ct').value||'').toLowerCase();
+  const srcFilter = (document.getElementById('csrc').value||'').toLowerCase();
+  const filtered = compounds.filter(r=>{
+    const matchesQ = !q || Object.values(r).join(' ').toLowerCase().includes(q);
+    const matchesT = !targetFilter || (r.Target||'').toLowerCase().includes(targetFilter);
+    const matchesS = !srcFilter || (r.Source||'').toLowerCase().includes(srcFilter);
+    return matchesQ && matchesT && matchesS;
+  });
+  renderCompounds(filtered);
+}
+
+/* ---------- Debug helpers ---------- */
+function showLoadedGenes(){ document.getElementById('genePreview').value = (normalizedGenes.length?normalizedGenes:geneList).slice(0,5000).join('\\n') || 'No genes loaded'; }
+function showUnmatchedGenes(){
+  const el = document.getElementById('unmatchedList');
+  const arr = Array.from(unmatchedGenes);
+  el.innerHTML = arr.length ? ('<strong>Unmatched genes</strong><br>' + arr.slice(0,1000).map(g=>escapeHtml(g)).join(', ')) : 'All loaded genes had targets or none attempted yet.';
+}
+function consoleLogState(){
+  console.log('rawGeneTokens', rawGeneTokens.length, rawGeneTokens.slice(0,50));
+  console.log('geneList', geneList.length, geneList.slice(0,50));
+  console.log('normalizedGenes', normalizedGenes.length, normalizedGenes.slice(0,50));
+  console.log('unmatchedGenes', unmatchedGenes.size, Array.from(unmatchedGenes).slice(0,50));
+  console.log('compounds', compounds.length);
+  alert('State logged to console.');
+}
+</script>
+
 
 <!-- ══════════════ GENES -->
 <div id="p-genes" class="panel">
