@@ -6,14 +6,40 @@
 <title>TNBC-India Atlas | Live Data Fetcher + Pipeline</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-:root{
-  --bg:#02040A;--s1:#070C18;--s2:#0D1422;--s3:#131B2C;
-  --b1:#192038;--b2:#1F2A45;
-  --green:#00E5A0;--purple:#6366F1;--amber:#F59E0B;--cyan:#06B6D4;--pink:#EC4899;--red:#EF4444;--blue:#3B82F6;
-  --t1:#EFF4FB;--t2:#7E8DA6;--t3:#3D4F6B;
-  --mono:'IBM Plex Mono',monospace;--sans:'Inter',system-ui,sans-serif;
-  padding-top:env(safe-area-inset-top,0);padding-bottom:env(safe-area-inset-bottom,0);box-sizing:border-box;
+:root {
+  /* Backgrounds */
+  --bg: #F9FAFB;       /* very light gray background */
+  --s1: #F3F4F6;       /* subtle section background */
+  --s2: #E5E7EB;       /* slightly darker section */
+  --s3: #D1D5DB;       /* muted divider tone */
+
+  /* Base accents */
+  --b1: #CBD5E1;       /* soft slate */
+  --b2: #94A3B8;       /* medium slate */
+
+  /* Primary colors (low contrast, calming) */
+  --blue: #3B82F6;     /* main accent (replaces green) */
+  --purple: #6366F1;
+  --amber: #F59E0B;
+  --cyan: #06B6D4;
+  --pink: #EC4899;
+  --red: #EF4444;
+
+  /* Text colors */
+  --t1: #111827;       /* main text (dark gray, not pure black) */
+  --t2: #374151;       /* secondary text */
+  --t3: #6B7280;       /* muted text */
+
+  /* Fonts */
+  --mono: 'IBM Plex Mono', monospace;
+  --sans: 'Inter', system-ui, sans-serif;
+
+  /* Safe area padding */
+  padding-top: env(safe-area-inset-top, 0);
+  padding-bottom: env(safe-area-inset-bottom, 0);
+  box-sizing: border-box;
 }
+
 *,*::before,*::after{box-sizing:inherit;margin:0;padding:0;}
 html,body{height:100%;background:var(--bg);color:var(--t1);font-family:var(--sans);}
 
