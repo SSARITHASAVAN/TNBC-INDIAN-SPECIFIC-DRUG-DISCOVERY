@@ -1604,3 +1604,657 @@
   </script>
 </body>
 </html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>TNBC-India Atlas — Gene → Compounds → Pathways</title>
+
+<!-- SmilesDrawer for 2D rendering -->
+<script src="https://cdn.jsdelivr.net/npm/smiles-drawer@2.0.1/dist/smiles-drawer.min.js"></script>
+
+<style>
+:root{--bg:#F9FAFB;--s1:#F3F4F6;--b1:#CBD5E1;--t1:#111827;--t2:#374151;--t3:#6B7280;--mono:ui-monospace,monospace;--sans:system-ui,Segoe UI,Roboto,Helvetica,Arial;}
+*{box-sizing:border-box}body{font-family:var(--sans);margin:0;background:var(--bg);color:var(--t1);padding:1rem}
+.header{display:flex;align-items:center;gap:1rem;margin-bottom:1rem}
+.h1{font-weight:700;font-size:1.25rem}
+.controls{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center}
+.inp,.sel{padding:.45rem .6rem;border-radius:6px;border:1px solid var(--b1);background:#fff}
+.btn{padding:.45rem .7rem;border-radius:6px;border:1px solid var(--b1);background:var(--s1);cursor:pointer}
+.grid{display:grid;grid-template-columns:1fr 420px;gap:1rem}
+.panel{background:#fff;border:1px solid var(--b1);border-radius:8px;padding:0.8rem;max-height:78vh;overflow:auto}
+.small{font-size:.85rem;color:var(--t3)}
+.table{width:100%;border-collapse:collapse;font-size:.85rem}
+.table th{position:sticky;top:0;background:#fff;padding:.45rem;border-bottom:1px solid var(--b1);text-align:left}
+.table td{padding:.45rem;border-bottom:1px solid var(--b1);vertical-align:middle}
+.terminal{background:#0b1220;color:#cfe8ff;padding:.6rem;border-radius:6px;font-family:var(--mono);font-size:.78rem;max-height:12rem;overflow:auto}
+.badge{font-family:var(--mono);font-size:.72rem;background:#eef2ff;padding:2px 6px;border-radius:6px}
+.smiles-canvas{width:120px;height:80px}
+.footer{margin-top:.6rem;font-size:.82rem;color:var(--t3)}
+.progress{height:8px;background:#eee;border-radius:6px;overflow:hidden;margin-top:.5rem}
+.progress > i{display:block;height:100%;width:0;background:linear-gradient(90deg,#3b82f6,#6366f1);transition:width .3s}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="h1">TNBC‑India Atlas — Gene → Compounds → Pathways</div>
+    <div class="small">Upload gene list, normalize, fetch ChEMBL compounds (with SMILES), view structures, and run pathway enrichment.</div>
+  </div>
+  <div style="flex:1"></div>
+  <div class="controls">
+    <input id="file" type="file" accept=".txt,.csv,.tsv" class="inp" />
+    <button id="btnParse" class="btn">Parse Genes</button>
+    <button id="btnNormalize" class="btn">Normalize & Fetch</button>
+    <button id="btnExportCSV" class="btn">Export CSV</button>
+    <button id="btnExportJSON" class="btn">Export JSON</button>
+  </div>
+</div>
+
+<div class="grid">
+  <!-- Left: main tables -->
+  <div>
+    <div class="panel" style="margin-bottom:1rem">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div style="font-weight:700">Gene Debug & Pathway Enrichment</div>
+        <div class="small">Parsed / Normalized genes: <span id="geneCount" class="badge">0</span></div>
+      </div>
+      <textarea id="genePreview" style="width:100%;height:120px;margin-top:.6rem;padding:.5rem;font-family:var(--mono)"></textarea>
+      <div style="display:flex;gap:.5rem;margin-top:.6rem;align-items:center">
+        <button id="btnShowUnmatched" class="btn">Show Unmatched</button>
+        <button id="btnShowLoaded" class="btn">Show Loaded</button>
+        <button id="btnConsole" class="btn">Console Log</button>
+        <div style="flex:1"></div>
+        <div class="small">Progress: <span id="progressText">Idle</span></div>
+      </div>
+
+      <div style="margin-top:.6rem">
+        <div style="font-weight:700;margin-bottom:.3rem">Pathway Enrichment (Reactome)</div>
+        <div id="pathSummary" class="small">No enrichment yet.</div>
+        <div id="pathList" style="margin-top:.5rem"></div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-bottom:1rem">
+      <div style="font-weight:700;margin-bottom:.5rem">Compounds (ChEMBL activities + SMILES)</div>
+      <div style="display:flex;gap:.5rem;align-items:center;margin-bottom:.5rem">
+        <input id="search" class="inp" placeholder="Search ID, name, target, source..." style="flex:1" />
+        <select id="targetFilter" class="sel"><option value="">All targets</option></select>
+        <button id="btnFilter" class="btn">Filter</button>
+      </div>
+
+      <div style="overflow:auto;max-height:46vh">
+        <table class="table" id="compTable">
+          <thead>
+            <tr>
+              <th>ID</th><th>Name</th><th>Target</th><th>IC50 (nM)</th><th>MW</th><th>SMILES</th><th>Structure</th><th>Source</th>
+            </tr>
+          </thead>
+          <tbody id="compTbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div style="font-weight:700;margin-bottom:.5rem">Retrosynthesis (server proxy)</div>
+      <div class="small">Enter SMILES and call your retrosynthesis proxy (recommended for production). The UI will POST to <code>/api/retrosynth</code>. Implement server-side API key storage and forwarding.</div>
+      <div style="display:flex;gap:.5rem;margin-top:.6rem">
+        <input id="retroSmiles" class="inp" placeholder="SMILES for retrosynthesis" />
+        <button id="btnRetro" class="btn">Run Retrosynthesis</button>
+      </div>
+      <div id="retroResult" style="margin-top:.6rem;font-family:var(--mono);font-size:.85rem"></div>
+    </div>
+  </div>
+
+  <!-- Right: terminal & stats -->
+  <div>
+    <div class="panel" style="margin-bottom:1rem">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div style="font-weight:700">Live Terminal</div>
+        <div class="small">Status</div>
+      </div>
+      <div id="terminal" class="terminal" style="margin-top:.6rem"></div>
+      <div class="progress"><i id="progressBar"></i></div>
+    </div>
+
+    <div class="panel">
+      <div style="font-weight:700;margin-bottom:.5rem">Stats</div>
+      <div style="display:flex;flex-direction:column;gap:.5rem">
+        <div>Parsed tokens: <span id="statParsed" class="badge">0</span></div>
+        <div>Normalized genes: <span id="statNorm" class="badge">0</span></div>
+        <div>Compounds collected: <span id="statComp" class="badge">0</span></div>
+        <div>Unmatched genes: <span id="statUnmatched" class="badge">0</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ---------- CONFIG ---------- */
+const CFG = {
+  chembl_base: 'https://www.ebi.ac.uk/chembl/api/data',
+  mygene_query: 'https://mygene.info/v3/query',
+  reactome_base: 'https://reactome.org/ContentService',
+  batchSize: 20,
+  activitiesPerTarget: 300,
+  concurrency: 6,
+  retryDelay: 1200,
+  maxRetries: 2,
+  // If you run a proxy, set it here (e.g., 'https://your-proxy.example.com')
+  proxy_base: '' // optional: '/api' or full URL
+};
+
+/* ---------- STATE ---------- */
+let rawGeneTokens = [];
+let geneList = [];
+let normalizedGenes = [];
+let unmatchedGenes = new Set();
+let compounds = []; // rows with SMILES
+let targetSet = new Set();
+let smilesCache = new Map();
+let moleculeCache = new Map();
+
+/* ---------- UTIL ---------- */
+function log(msg, cls='') {
+  const t = document.getElementById('terminal');
+  const line = document.createElement('div');
+  line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  if(cls) line.className = cls;
+  t.appendChild(line);
+  t.scrollTop = t.scrollHeight;
+}
+function delay(ms){ return new Promise(r=>setTimeout(r,ms)); }
+function downloadText(text, filename, mime){
+  const blob = new Blob([text], {type:mime});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download=filename; document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); },500);
+}
+function toCsv(rows){
+  if(!rows.length) return '';
+  const esc = v => '"' + String(v ?? '').replace(/"/g,'""') + '"';
+  const header = Object.keys(rows[0]).map(esc).join(',');
+  const lines = rows.map(r => Object.values(r).map(esc).join(','));
+  return [header, ...lines].join('\n');
+}
+async function fetchWithRetries(url, retries=CFG.maxRetries){
+  for(let attempt=0; attempt<=retries; attempt++){
+    try{
+      const resp = await fetch(url);
+      if(!resp.ok) throw new Error('HTTP ' + resp.status);
+      return await resp.json();
+    } catch(e){
+      if(attempt === retries) throw e;
+      await delay(CFG.retryDelay * (attempt+1));
+    }
+  }
+}
+
+/* ---------- FILE PARSING ---------- */
+document.getElementById('btnParse').addEventListener('click', loadGenesFromFile);
+document.getElementById('file').addEventListener('change', ()=>{ /* file chosen */ });
+
+function loadGenesFromFile(){
+  const f = document.getElementById('file').files[0];
+  if(!f){ alert('Choose a gene file (.txt, .csv, .tsv)'); return; }
+  const reader = new FileReader();
+  reader.onload = e => {
+    const text = e.target.result;
+    const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+    const tokens = [];
+    for(const line of lines){
+      const parts = line.split(/[\t,;|]/).map(p=>p.trim()).filter(Boolean);
+      for(const p of parts){
+        const cleaned = p.replace(/[:\(\)
+
+\[\]
+
+\{\}]/g,' ').replace(/[^A-Za-z0-9_\- ]/g,' ').trim();
+        const candidates = cleaned.split(/\s+/).filter(Boolean);
+        for(const c of candidates){
+          if(/[A-Za-z]/.test(c) && c.length>=2 && c.length<=12){
+            tokens.push(c.toUpperCase());
+          }
+        }
+      }
+    }
+    rawGeneTokens = Array.from(new Set(tokens));
+    geneList = rawGeneTokens.slice();
+    document.getElementById('genePreview').value = geneList.join('\n');
+    document.getElementById('geneCount').textContent = geneList.length;
+    document.getElementById('statParsed').textContent = geneList.length;
+    log(`Parsed ${geneList.length} gene tokens.`);
+    populateTargetFilter([]);
+  };
+  reader.readAsText(f);
+}
+
+/* ---------- NORMALIZATION (MyGene.info) ---------- */
+document.getElementById('btnNormalize').addEventListener('click', normalizeThenFetch);
+
+async function normalizeGenes(tokens){
+  const normalized = [];
+  const mapTokenToCanonical = {};
+  const batchSize = 200;
+  for(let i=0;i<tokens.length;i+=batchSize){
+    const batch = tokens.slice(i,i+batchSize);
+    const q = batch.map(t => `symbol:${t} OR alias:${t} OR name:${t}`).join(' OR ');
+    const params = new URLSearchParams();
+    params.set('q', q);
+    params.set('fields', 'symbol,name,entrezgene,ensembl,uniprot');
+    params.set('size', batch.length * 2);
+    const url = `${CFG.mygene_query}?${params.toString()}`;
+    try{
+      const resp = await fetch(url);
+      if(!resp.ok) throw new Error('MyGene error ' + resp.status);
+      const data = await resp.json();
+      const hits = data.hits || [];
+      const hitByQuery = {};
+      for(const h of hits){
+        const sym = (h.symbol || '').toUpperCase();
+        if(sym) hitByQuery[sym] = h;
+        if(h.alias && Array.isArray(h.alias)){
+          for(const a of h.alias) hitByQuery[String(a).toUpperCase()] = h;
+        }
+      }
+      for(const t of batch){
+        const h = hitByQuery[t] || hitByQuery[t.replace(/-/g,'')] || null;
+        if(h && h.symbol) mapTokenToCanonical[t] = h.symbol.toUpperCase();
+        else mapTokenToCanonical[t] = null;
+      }
+    } catch(e){
+      console.warn('MyGene batch failed', e);
+      for(const t of batch) mapTokenToCanonical[t] = null;
+    }
+    await delay(200);
+  }
+  for(const t of tokens){
+    const canon = mapTokenToCanonical[t];
+    if(canon) normalized.push(canon);
+    else normalized.push(t);
+  }
+  const uniq = Array.from(new Set(normalized));
+  normalizedGenes = uniq;
+  return uniq;
+}
+
+async function normalizeThenFetch(){
+  if(!geneList.length){ alert('No genes parsed. Upload file first.'); return; }
+  try{
+    setProgress('Normalizing gene symbols...');
+    const norm = await normalizeGenes(geneList);
+    document.getElementById('genePreview').value = norm.join('\n');
+    document.getElementById('statNorm').textContent = norm.length;
+    log(`Normalized to ${norm.length} canonical symbols.`);
+    populateTargetFilter(norm);
+    unmatchedGenes = new Set();
+    compounds = [];
+    renderCompounds();
+    await startFetchForGenes(norm);
+    await runPathwayEnrichment(norm);
+    setProgress('Done');
+  } catch(e){
+    console.error(e);
+    alert('Normalization or fetch failed. See console.');
+    setProgress('Error');
+  }
+}
+
+/* ---------- ChEMBL pipeline (targets -> activities -> molecule SMILES) ---------- */
+
+async function startFetchForGenes(genes){
+  if(!genes || !genes.length) return;
+  setProgress('Resolving targets and fetching compounds...');
+  compounds = [];
+  targetSet.clear();
+  for(let i=0;i<genes.length;i+=CFG.batchSize){
+    const batch = genes.slice(i,i+CFG.batchSize);
+    setProgress(`Resolving targets for genes ${i+1}-${Math.min(i+CFG.batchSize,genes.length)} of ${genes.length}...`);
+    const targetsMap = await fetchTargetsForGenes(batch);
+    for(const g of batch){
+      const tlist = targetsMap[g] || [];
+      if(!tlist.length){ unmatchedGenes.add(g); continue; }
+      for(const t of tlist){
+        targetSet.add(g);
+        setProgress(`Fetching activities for ${t.target_chembl_id} (${g})...`);
+        try{
+          const acts = await fetchActivitiesForTarget(t.target_chembl_id, CFG.activitiesPerTarget);
+          for(const a of acts){
+            const row = {
+              ID: a.molecule_chembl_id || '',
+              Name: a.molecule_pref_name || a.pref_name || '',
+              Target: g,
+              'IC50 (nM)': extractIc50(a),
+              MW: a.molecule_properties ? a.molecule_properties.full_molweight : '',
+              SMILES: '',
+              Source: 'ChEMBL'
+            };
+            // fetch SMILES from molecule endpoint (cached)
+            if(row.ID){
+              try{
+                const smiles = await fetchSmilesForMolecule(row.ID);
+                if(smiles) row.SMILES = smiles;
+              } catch(e){
+                // ignore
+              }
+            }
+            compounds.push(row);
+          }
+          compounds = dedupeCompounds(compounds);
+          renderCompounds();
+        } catch(e){
+          console.warn('Activities fetch failed for', t.target_chembl_id, e);
+        }
+        await delay(120);
+      }
+    }
+    await delay(300);
+  }
+  document.getElementById('statComp').textContent = compounds.length;
+  document.getElementById('statUnmatched').textContent = unmatchedGenes.size;
+  log(`Collected ${compounds.length} unique compounds.`);
+}
+
+/* Fetch ChEMBL targets for genes */
+async function fetchTargetsForGenes(genes){
+  const out = {};
+  const concurrency = Math.min(CFG.concurrency, 8);
+  let idx = 0;
+  async function worker(){
+    while(idx < genes.length){
+      const g = genes[idx++];
+      try{
+        const url = `${CFG.chembl_base}/target/search.json?target_synonym=${encodeURIComponent(g)}&limit=50`;
+        const res = await fetchWithRetries(url);
+        if(res && res.targets && res.targets.length){
+          out[g] = res.targets.map(t=>({ target_chembl_id: t.target_chembl_id, pref_name: t.pref_name }));
+        } else {
+          const url2 = `${CFG.chembl_base}/target/search.json?pref_name=${encodeURIComponent(g)}&limit=50`;
+          const res2 = await fetchWithRetries(url2);
+          out[g] = (res2 && res2.targets) ? res2.targets.map(t=>({ target_chembl_id: t.target_chembl_id, pref_name: t.pref_name })) : [];
+        }
+      } catch(e){
+        console.warn('Target lookup error for', g, e);
+        out[g] = [];
+      }
+    }
+  }
+  const workers = Array.from({length:concurrency},()=>worker());
+  await Promise.all(workers);
+  return out;
+}
+
+/* Fetch activities for a target (paginated) */
+async function fetchActivitiesForTarget(targetChemblId, maxRecords=300){
+  const pageSize = 100;
+  let fetched = [];
+  let offset = 0;
+  while(fetched.length < maxRecords){
+    const limit = Math.min(pageSize, maxRecords - fetched.length);
+    const url = `${CFG.chembl_base}/activity.json?target_chembl_id=${encodeURIComponent(targetChemblId)}&limit=${limit}&offset=${offset}`;
+    const res = await fetchWithRetries(url);
+    if(!res || !res.activities || !res.activities.length) break;
+    fetched = fetched.concat(res.activities);
+    if(res.activities.length < limit) break;
+    offset += limit;
+    if(offset > 5000) break;
+    await delay(80);
+  }
+  return fetched;
+}
+
+/* Fetch molecule record to extract SMILES (cached) */
+async function fetchSmilesForMolecule(molChemblId){
+  if(!molChemblId) return '';
+  if(smilesCache.has(molChemblId)) return smilesCache.get(molChemblId);
+  // molecule endpoint
+  const url = `${CFG.chembl_base}/molecule/${encodeURIComponent(molChemblId)}.json`;
+  try{
+    const res = await fetchWithRetries(url);
+    const smiles = res && res.molecule_structures && (res.molecule_structures.canonical_smiles || res.molecule_structures.smiles);
+    smilesCache.set(molChemblId, smiles || '');
+    return smiles || '';
+  } catch(e){
+    console.warn('Molecule fetch failed', molChemblId, e);
+    smilesCache.set(molChemblId, '');
+    return '';
+  }
+}
+
+/* extract IC50 */
+function extractIc50(act){
+  if(!act) return '';
+  if(act.standard_type && act.standard_value){
+    const val = parseFloat(act.standard_value);
+    const unit = (act.standard_units || '').toLowerCase();
+    if(isNaN(val)) return `${act.standard_value} ${act.standard_units||''}`;
+    if(unit === 'nm') return val;
+    if(unit === 'um' || unit === 'μm' || unit === 'µm') return val * 1000;
+    if(unit === 'm') return val * 1e9;
+    if(unit === 'pm') return val / 1000;
+    return val;
+  }
+  return '';
+}
+
+/* dedupe compounds */
+function dedupeCompounds(list){
+  const map = new Map();
+  list.forEach(r=>{
+    const id = (r.ID||'').trim();
+    const key = id || (r.Name + '|' + r.Target);
+    if(!map.has(key)) map.set(key, r);
+    else {
+      const ex = map.get(key);
+      for(const k of Object.keys(r)) if(!ex[k] && r[k]) ex[k] = r[k];
+    }
+  });
+  return Array.from(map.values());
+}
+
+/* render compounds */
+function renderCompounds(rows = compounds){
+  const tbody = document.getElementById('compTbody');
+  tbody.innerHTML = '';
+  const targetFilter = document.getElementById('targetFilter').value.toLowerCase();
+  const q = (document.getElementById('search').value||'').toLowerCase();
+  rows.forEach((r, idx)=>{
+    if(targetFilter && !(r.Target||'').toLowerCase().includes(targetFilter)) return;
+    if(q && !Object.values(r).join(' ').toLowerCase().includes(q)) return;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${escapeHtml(r.ID||'')}</td>
+      <td>${escapeHtml(r.Name||'')}</td>
+      <td>${escapeHtml(r.Target||'')}</td>
+      <td>${escapeHtml(r['IC50 (nM)']||'')}</td>
+      <td>${escapeHtml(r.MW||'')}</td>
+      <td style="font-family:var(--mono);font-size:.78rem">${escapeHtml(r.SMILES||'')}</td>
+      <td><canvas id="cv${idx}" class="smiles-canvas"></canvas></td>
+      <td>${escapeHtml(r.Source||'')}</td>
+    `;
+    tbody.appendChild(tr);
+    // render SMILES if present
+    if(r.SMILES){
+      try{
+        const drawer = new SmilesDrawer.Drawer({width:120, height:80, compactDrawing:true});
+        SmilesDrawer.parse(r.SMILES, function(tree){
+          drawer.draw(tree, `cv${idx}`, 'light', false);
+        }, function(err){ /* parse error */ });
+      } catch(e){}
+    }
+  });
+  // update stats and target filter options
+  document.getElementById('statComp').textContent = compounds.length;
+  populateTargetFilter(Array.from(targetSet).sort());
+}
+
+/* ---------- PATHWAY ENRICHMENT (Reactome) ---------- */
+async function runPathwayEnrichment(genes){
+  setProgress('Running pathway enrichment...');
+  log('Resolving UniProt IDs for pathway mapping...');
+  // Use MyGene to map gene symbols to UniProt (Swiss-Prot) identifiers
+  const uniMap = {}; // gene -> [uniprot ids]
+  const batchSize = 200;
+  for(let i=0;i<genes.length;i+=batchSize){
+    const batch = genes.slice(i,i+batchSize);
+    const q = batch.map(t => `symbol:${t}`).join(' OR ');
+    const params = new URLSearchParams();
+    params.set('q', q);
+    params.set('fields', 'symbol,uniprot');
+    params.set('size', batch.length * 2);
+    const url = `${CFG.mygene_query}?${params.toString()}`;
+    try{
+      const resp = await fetch(url);
+      const data = await resp.json();
+      const hits = data.hits || [];
+      for(const h of hits){
+        const sym = (h.symbol||'').toUpperCase();
+        let u = [];
+        if(h.uniprot){
+          if(h.uniprot.Swiss-Prot) u = Array.isArray(h.uniprot['Swiss-Prot']) ? h.uniprot['Swiss-Prot'] : [h.uniprot['Swiss-Prot']];
+          else if(h.uniprot.TrEMBL) u = Array.isArray(h.uniprot['TrEMBL']) ? h.uniprot['TrEMBL'] : [h.uniprot['TrEMBL']];
+        }
+        if(sym) uniMap[sym] = u;
+      }
+    } catch(e){
+      console.warn('MyGene uniprot mapping failed', e);
+    }
+    await delay(150);
+  }
+
+  // For each UniProt, fetch Reactome pathways
+  const pathwayCounts = {}; // pathwayId -> {name, count, genes:[]}
+  const uniList = [];
+  for(const g of genes){
+    const uids = uniMap[g] || [];
+    for(const u of uids) uniList.push({gene:g, uni:u});
+  }
+  // If no UniProt mapping, fallback: try Reactome identifier mapping by gene symbol (less reliable)
+  if(!uniList.length){
+    log('No UniProt IDs found; attempting Reactome mapping by gene symbol (best-effort).');
+    for(const g of genes) uniList.push({gene:g, uni:g});
+  }
+
+  // fetch pathways per UniProt
+  for(const entry of uniList){
+    const gene = entry.gene;
+    const uni = entry.uni;
+    try{
+      const url = `${CFG.reactome_base}/data/mapping/UniProt/${encodeURIComponent(uni)}/pathways`;
+      const res = await fetch(url);
+      if(!res.ok) continue;
+      const arr = await res.json();
+      for(const p of arr){
+        const pid = p.stId || p.dbId || p.identifier || p.stId;
+        const pname = p.displayName || p.name || p.stId;
+        if(!pathwayCounts[pid]) pathwayCounts[pid] = {name:pname, count:0, genes: new Set()};
+        pathwayCounts[pid].count += 1;
+        pathwayCounts[pid].genes.add(gene);
+      }
+    } catch(e){
+      // ignore
+    }
+    await delay(80);
+  }
+
+  // convert and sort
+  const list = Object.entries(pathwayCounts).map(([id,v])=>({id, name:v.name, count:v.count, genes:Array.from(v.genes)}));
+  list.sort((a,b)=>b.count - a.count);
+  // render top pathways
+  const pathSummary = document.getElementById('pathSummary');
+  if(!list.length){
+    pathSummary.textContent = 'No pathways found for uploaded genes (or Reactome mapping blocked by CORS).';
+    setProgress('Pathway enrichment complete (0 results).');
+    return;
+  }
+  pathSummary.textContent = `Top ${Math.min(10,list.length)} pathways`;
+  const container = document.getElementById('pathList');
+  container.innerHTML = '';
+  list.slice(0,20).forEach(p=>{
+    const el = document.createElement('div');
+    el.style.padding = '.35rem .4rem';
+    el.style.borderBottom = '1px solid #eee';
+    el.innerHTML = `<strong>${escapeHtml(p.name)}</strong> — <span class="small">${p.count} genes</span><br><span class="small" style="color:#555">${escapeHtml(p.genes.join(', '))}</span>`;
+    container.appendChild(el);
+  });
+  setProgress('Pathway enrichment complete.');
+}
+
+/* ---------- UI helpers ---------- */
+function populateTargetFilter(list){
+  const sel = document.getElementById('targetFilter');
+  sel.innerHTML = '<option value="">All targets</option>';
+  const arr = list.length ? list : Array.from(targetSet).sort();
+  arr.forEach(g=>{
+    const o = document.createElement('option'); o.value = g; o.textContent = g; sel.appendChild(o);
+  });
+}
+function populateTargetFilterFromNormalized(){
+  populateTargetFilter(normalizedGenes);
+}
+function showUnmatched(){
+  const arr = Array.from(unmatchedGenes);
+  alert(arr.length ? `Unmatched genes:\n\n${arr.join(', ')}` : 'No unmatched genes.');
+}
+function showLoaded(){
+  alert(normalizedGenes.length ? `Loaded genes:\n\n${normalizedGenes.join(', ')}` : 'No loaded genes.');
+}
+function consoleLogState(){
+  console.log({rawGeneTokens, geneList, normalizedGenes, unmatchedGenes, compounds});
+  alert('State logged to console.');
+}
+document.getElementById('btnShowUnmatched').addEventListener('click', showUnmatched);
+document.getElementById('btnShowLoaded').addEventListener('click', showLoaded);
+document.getElementById('btnConsole').addEventListener('click', consoleLogState);
+document.getElementById('btnFilter').addEventListener('click', ()=>renderCompounds());
+document.getElementById('search').addEventListener('input', ()=>renderCompounds());
+document.getElementById('btnExportCSV').addEventListener('click', ()=>{ if(!compounds.length){alert('No compounds');return;} downloadText(toCsv(compounds),'compounds.csv','text/csv'); });
+document.getElementById('btnExportJSON').addEventListener('click', ()=>{ if(!compounds.length){alert('No compounds');return;} downloadText(JSON.stringify(compounds,null,2),'compounds.json','application/json'); });
+
+/* ---------- Retrosynthesis UI (calls proxy) ---------- */
+document.getElementById('btnRetro').addEventListener('click', async ()=>{
+  const s = document.getElementById('retroSmiles').value.trim();
+  if(!s){ alert('Enter SMILES'); return; }
+  const out = document.getElementById('retroResult');
+  out.textContent = 'Running retrosynthesis...';
+  try{
+    // Proxy endpoint recommended: implement server-side /api/retrosynth that forwards to chosen retrosynthesis service (ASKCOS, AiZynth, PostEra)
+    const proxy = CFG.proxy_base ? (CFG.proxy_base + '/retrosynth') : '/api/retrosynth';
+    const resp = await fetch(proxy, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({smiles:s})
+    });
+    if(!resp.ok) throw new Error('Retrosynth proxy error ' + resp.status);
+    const data = await resp.json();
+    out.textContent = JSON.stringify(data, null, 2);
+  } catch(e){
+    out.textContent = 'Retrosynthesis failed. Implement a server proxy at /api/retrosynth or set CFG.proxy_base to your proxy URL.';
+    console.error(e);
+  }
+});
+
+/* ---------- small helpers ---------- */
+function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function setProgress(text, pct){
+  document.getElementById('progressText').textContent = text;
+  if(typeof pct === 'number') document.getElementById('progressBar').style.width = pct + '%';
+  else document.getElementById('progressBar').style.width = '0%';
+}
+
+/* ---------- init ---------- */
+(function init(){
+  document.getElementById('statParsed').textContent = 0;
+  document.getElementById('statNorm').textContent = 0;
+  document.getElementById('statComp').textContent = 0;
+  document.getElementById('statUnmatched').textContent = 0;
+  log('UI ready. Upload a gene file and click Parse Genes.');
+})();
+
+/* ---------- End of script ---------- */
+</script>
+
+</body>
+</html>
